@@ -1,0 +1,38 @@
+{
+  "mcpServers": {
+    "job-applications": {
+      "command": "python3",
+      "args": ["job_applications_mcp_server.py"],
+      "cwd": "/Users/gslee/Projects/Job-Applications"
+    },
+    "ai-assistant": {
+      "command": "python3",
+      "args": ["/Users/gslee/Projects/AI-Assistant/src/ai_assistant/mcp_server.py"]
+    },
+    "ai-crm": {
+      "command": "node",
+      "args": ["/Users/gslee/Projects/AI-CRM/dist/index.js"],
+      "env": {
+        "DATABASE_URL": "postgresql://ai_crm:ai_crm_dev@localhost:5433/ai_crm"
+      }
+    },
+    "contacts": {
+      "command": "python3",
+      "args": ["/Users/gslee/Projects/Contact-Cleanup/contacts_mcp_server.py"],
+      "env": {
+        "CONTACTS_CACHE_PATH": "/Users/gslee/Projects/Contact-Cleanup/contacts_cache.json"
+      }
+    },
+    "sgdi": {
+      "command": "python3",
+      "args": ["/Users/gslee/Projects/Contact-Cleanup/sgdi_mcp_server.py"],
+      "env": {
+        "SGDI_CACHE_PATH": "/Users/gslee/Projects/Contact-Cleanup/sgdi_cache.json"
+      }
+    },
+    "gebiz-awards": {
+      "command": "python3",
+      "args": ["/Users/gslee/Projects/GeBiz-Awards/mcp_server.py"]
+    }
+  }
+}
