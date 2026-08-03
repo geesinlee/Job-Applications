@@ -1,3 +1,12 @@
 fastmcp>=2.0,<3
 PyPDF2~=3.0
 python-dotenv~=1.0
+requests~=2.32
+beautifulsoup4~=4.12
+
+# Document export (Task 8)
+markdown~=3.6
+python-docx~=1.1
+
+# PDF export — requires system Cairo/Pango (x86_64 NAS container or Homebrew on Mac); not required on pi
+weasyprint~=61.0

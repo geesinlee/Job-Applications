@@ -1,31 +1,33 @@
 {
   "mcpServers": {
     "job-applications": {
-      "command": "python3",
-      "args": ["job_applications_mcp_server.py"],
-      "cwd": "/Users/gslee/Projects/Job-Applications"
+      "type": "http",
+      "url": "http://gs-pi-4.local:8086/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_AUTH_TOKEN}"
+      }
     },
     "ai-assistant": {
       "command": "python3",
-      "args": ["/Users/gslee/Projects/AI-Assistant/src/ai_assistant/mcp_server.py"]
+      "args": ["${AI_ASSISTANT_MCP_SERVER_PATH}"]
     },
     "contacts": {
       "command": "python3",
-      "args": ["/Users/gslee/Projects/Contact-Cleanup/contacts_mcp_server.py"],
+      "args": ["${CONTACTS_MCP_SERVER_PATH}"],
       "env": {
-        "CONTACTS_CACHE_PATH": "/Users/gslee/Projects/Contact-Cleanup/contacts_cache.json"
+        "CONTACTS_CACHE_PATH": "${CONTACTS_CACHE_PATH}"
       }
     },
     "sgdi": {
       "command": "python3",
-      "args": ["/Users/gslee/Projects/Contact-Cleanup/sgdi_mcp_server.py"],
+      "args": ["${SGDI_MCP_SERVER_PATH}"],
       "env": {
-        "SGDI_CACHE_PATH": "/Users/gslee/Projects/Contact-Cleanup/sgdi_cache.json"
+        "SGDI_CACHE_PATH": "${SGDI_CACHE_PATH}"
       }
     },
     "gebiz-awards": {
       "command": "python3",
-      "args": ["/Users/gslee/Projects/GeBiz-Awards/mcp_server.py"]
+      "args": ["${GEBIZ_AWARDS_MCP_SERVER_PATH}"]
     }
   }
 }

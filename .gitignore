@@ -4,4 +4,6 @@ __pycache__/
 .DS_Store
 .env
 tracker.json
+tracker.json.bak-*
 profile.json
+tracker_daily.log

@@ -1,0 +1,16 @@
+[Unit]
+Description=Job Applications MCP Server
+After=network.target
+
+[Service]
+WorkingDirectory=/home/gs/Projects/Job-Applications
+ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python \
+          job_applications_mcp_server.py
+Environment=MCP_MODE=http
+Environment=JOB_APP_BASE_DIR=/home/gs/Projects/Job-Applications
+EnvironmentFile=/home/gs/Projects/Job-Applications/.env
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

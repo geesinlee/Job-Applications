@@ -1,0 +1,9 @@
+[Unit]
+Description=Job Applications Daily Tracker Run
+After=network.target
+
+[Service]
+WorkingDirectory=/home/gs/Projects/Job-Applications
+ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python \
+          tracker_daily.py
+EnvironmentFile=/home/gs/Projects/Job-Applications/.env
