@@ -2,32 +2,315 @@
 """Job Applications MCP Server — Orchestrates job application workflow.
 
 Manages company folders, job description parsing, research templates,
-territory mapping, and document generation for job applications.
+territory mapping, profile management, match scoring, gap analysis,
+application tracking, and document generation for job applications.
+
+Deployment:
+  - stdio  : Mac (transient, during active Claude session)
+  - http   : pi-4 gs-pi-4 :8086 (always-on systemd service)
+
+Artefact files (JD.md, CVs, research) live on the NAS share.
+tracker.json and profile.json live on pi-4 local disk, rsynced to NAS
+after every write.
 """
 
 import json
-from datetime import datetime
+import os
+import re
+import subprocess
+import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv optional; env vars may be set by systemd EnvironmentFile
 
 try:
     from PyPDF2 import PdfReader
 except ImportError:
     PdfReader = None
 
-__version__ = "0.1.0"
+from mcp.server.fastmcp import FastMCP
+
+__version__ = "0.2.0"
+
+# ---------------------------------------------------------------------------
+# Configuration — env vars with __file__-relative fallbacks
+# ---------------------------------------------------------------------------
+
+_SRC_DIR = Path(__file__).resolve().parent
+
+BASE_DIR = Path(os.environ.get("JOB_APP_BASE_DIR", str(_SRC_DIR)))
+ARTEFACTS_DIR = Path(os.environ.get("JOB_APP_ARTEFACTS_DIR", str(BASE_DIR)))
+TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
+PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
+BASE_CV_PATH = Path(os.environ.get(
+    "JOB_APP_BASE_CV_PATH",
+    str(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md"),
+))
+NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")   # e.g. gs@rv-cloud.local:/share/job-app-data/
+MCP_MODE = os.environ.get("MCP_MODE", "stdio")         # "stdio" | "http"
+MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
+
+# ---------------------------------------------------------------------------
+# Startup validation
+# ---------------------------------------------------------------------------
+
+def _startup_validate() -> None:
+    """Verify BASE_DIR exists; initialise tracker.json and profile.json if absent.
+    Exits with code 1 (writing to stderr) if BASE_DIR is missing.
+    """
+    if not BASE_DIR.is_dir():
+        sys.stderr.write(
+            f"[job-applications] ERROR: BASE_DIR not found or not a directory: {BASE_DIR}\n"
+            "Set JOB_APP_BASE_DIR to a valid path.\n"
+        )
+        sys.exit(1)
+
+    if not TRACKER_PATH.exists():
+        TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
+        TRACKER_PATH.write_text(
+            json.dumps({"schema_version": "1.0", "applications": []}, indent=2),
+            encoding="utf-8",
+        )
+
+    if not PROFILE_PATH.exists():
+        PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PROFILE_PATH.write_text(
+            json.dumps({"schema_version": "1.0"}, indent=2),
+            encoding="utf-8",
+        )
+
+_startup_validate()
+
+# ---------------------------------------------------------------------------
+# Persistence helpers
+# ---------------------------------------------------------------------------
+
+def _utc_now() -> str:
+    """Return current UTC time as ISO-8601 string, e.g. '2026-08-02T14:30:00Z'."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _load_tracker() -> dict:
+    """Load tracker.json, returning empty schema on any read error."""
+    try:
+        return json.loads(TRACKER_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"schema_version": "1.0", "applications": []}
+
+
+def _save_tracker(data: dict) -> None:
+    """Save tracker.json and rsync to NAS backup (fire-and-forget)."""
+    TRACKER_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _nas_sync()
+
+
+def _load_profile() -> dict:
+    """Load profile.json, returning empty schema on any read error."""
+    try:
+        return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"schema_version": "1.0"}
+
+
+def _save_profile(data: dict) -> None:
+    """Save profile.json and rsync to NAS backup (fire-and-forget)."""
+    PROFILE_PATH.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    _nas_sync()
+
+
+def _nas_sync() -> None:
+    """Rsync tracker.json and profile.json to NAS backup path (non-blocking).
+    Silently skips if NAS_SYNC_PATH is not configured.
+    """
+    if not NAS_SYNC_PATH:
+        return
+    try:
+        subprocess.Popen(
+            ["rsync", "-a", str(TRACKER_PATH), str(PROFILE_PATH), NAS_SYNC_PATH],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        pass  # rsync not installed; skip silently
+
+
+# ---------------------------------------------------------------------------
+# Stage machine constants
+# ---------------------------------------------------------------------------
+
+VALID_STAGES = {
+    "new", "applied", "screening",
+    "interview_r1", "interview_r2", "interview_r3",
+    "offer", "accepted", "rejected", "withdrawn",
+}
+TERMINAL_STAGES = {"accepted", "rejected", "withdrawn"}
+INTERVIEW_STAGES = {"interview_r1", "interview_r2", "interview_r3"}
+
+VALID_TRANSITIONS: dict[str, set[str]] = {
+    "new":          {"applied", "rejected", "withdrawn"},
+    "applied":      {"screening", "rejected", "withdrawn"},
+    "screening":    {"interview_r1", "rejected", "withdrawn"},
+    "interview_r1": {"interview_r2", "offer", "rejected", "withdrawn"},
+    "interview_r2": {"interview_r3", "offer", "rejected", "withdrawn"},
+    "interview_r3": {"offer", "rejected", "withdrawn"},
+    "offer":        {"accepted", "rejected", "withdrawn"},
+    "accepted":     set(),
+    "rejected":     set(),
+    "withdrawn":    set(),
+}
+
+# ---------------------------------------------------------------------------
+# Path resolver helpers
+# ---------------------------------------------------------------------------
+
+def _make_role_slug(role_title: str) -> str:
+    """Convert role title to URL-safe lowercase slug.
+    e.g. 'Enterprise AE – Strategic Accounts' -> 'enterprise-ae-strategic-accounts'
+    """
+    slug = role_title.lower()
+    slug = re.sub(r"[^\w\s-]", "", slug)   # remove special chars except hyphen
+    slug = re.sub(r"[\s_]+", "-", slug)    # spaces/underscores to hyphens
+    slug = re.sub(r"-+", "-", slug)        # collapse multiple hyphens
+    return slug.strip("-")
+
+
+class AmbiguousRoleError(ValueError):
+    """Raised when a company has multiple roles and none is specified."""
+    def __init__(self, company: str, roles: list[str]):
+        self.company = company
+        self.roles = roles
+        super().__init__(f"Multiple roles at {company}: {roles}")
+
+
+def _resolve_company_folder(
+    company: str,
+    role_title: str | None = None,
+    tracker: dict | None = None,
+) -> Path:
+    """Return the correct artefact folder for this company+role.
+
+    Logic:
+    1. If the company root has JD.md directly (legacy single-role) and either
+       no role_title is given or role_title matches the tracker record → return root.
+    2. If role_title is given → return ARTEFACTS_DIR/Company/role-slug/.
+    3. If multiple tracker records exist for this company and role_title is None → raise.
+    4. Otherwise return the company root.
+    """
+    company_root = ARTEFACTS_DIR / company
+
+    # Check how many tracker records exist for this company
+    if tracker is None:
+        tracker = _load_tracker()
+    company_apps = [
+        a for a in tracker.get("applications", [])
+        if a["company"].lower() == company.lower()
+    ]
+
+    # Legacy root: JD.md exists at root with no sub-folders
+    root_jd = company_root / "JD.md"
+    has_root_jd = root_jd.exists()
+
+    if role_title is None:
+        if len(company_apps) > 1:
+            raise AmbiguousRoleError(company, [a["role_title"] for a in company_apps])
+        # Single or no record — use root
+        return company_root
+
+    # role_title given — check if it matches the legacy root record
+    if has_root_jd and len(company_apps) <= 1:
+        return company_root  # legacy single-role, use root
+
+    # Multi-role: use slug sub-folder
+    slug = _make_role_slug(role_title)
+    return company_root / slug
+
+
+def _find_application(tracker: dict, company: str, role_title: str | None) -> dict | None:
+    """Find an application record by company (and optionally role_title)."""
+    for app in tracker.get("applications", []):
+        if app["company"].lower() != company.lower():
+            continue
+        if role_title is None or app["role_title"].lower() == role_title.lower():
+            return app
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Follow-up helpers
+# ---------------------------------------------------------------------------
+
+def _days_from_now_utc(days: int) -> str:
+    """Return date N days from today in YYYY-MM-DD format (UTC)."""
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d")
+
+
+def _auto_create_followup(app: dict, new_stage: str) -> None:
+    """Create follow-up records on stage transition (Req 11)."""
+    followups = app.setdefault("followups", [])
+
+    if new_stage == "applied":
+        # send_follow_up_email — deduplicate
+        already = any(
+            f["action_type"] == "send_follow_up_email" and f["status"] == "pending"
+            for f in followups
+        )
+        if not already:
+            followups.append({
+                "id": str(uuid.uuid4()),
+                "action_type": "send_follow_up_email",
+                "due_date": _days_from_now_utc(7),
+                "status": "pending",
+                "completed_at": None,
+            })
+
+    elif new_stage in INTERVIEW_STAGES:
+        # send_thank_you_note — deduplicate
+        already = any(
+            f["action_type"] == "send_thank_you_note" and f["status"] == "pending"
+            for f in followups
+        )
+        if not already:
+            followups.append({
+                "id": str(uuid.uuid4()),
+                "action_type": "send_thank_you_note",
+                "due_date": _days_from_now_utc(1),
+                "status": "pending",
+                "completed_at": None,
+            })
+        # Cancel any pending follow-up email (Req 11.7)
+        _cancel_followup_emails(app)
+
+
+def _cancel_followup_emails(app: dict) -> None:
+    """Set pending send_follow_up_email records to cancelled."""
+    for f in app.get("followups", []):
+        if f["action_type"] == "send_follow_up_email" and f["status"] == "pending":
+            f["status"] = "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# MCP server instance
+# ---------------------------------------------------------------------------
 
 mcp = FastMCP("job-applications")
-
-# Base directory: the Job-Applications folder containing company subfolders
-BASE_DIR = Path(__file__).resolve().parent
 
 
 def _company_dir(company: str) -> Path:
     """Return the path to a company folder, creating it if needed."""
-    d = BASE_DIR / company
+    d = ARTEFACTS_DIR / company
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -177,7 +460,15 @@ def create_application(company: str, jd_path: str, role_title: str | None = None
         jd_path: Path to the job description file (PDF or Markdown).
         role_title: Optional role title override. If omitted, extracted from JD.
     """
-    company_dir = _company_dir(company)
+    tracker = _load_tracker()
+    try:
+        # Resolve using the caller-supplied role_title only — an extracted-from-JD
+        # fallback must not influence folder placement (Req 10, legacy compat).
+        company_dir = _resolve_company_folder(company, role_title, tracker)
+    except AmbiguousRoleError as e:
+        return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
+    company_dir.mkdir(parents=True, exist_ok=True)
+
     jd_source = Path(jd_path)
 
     # Read and parse the JD
@@ -191,7 +482,7 @@ def create_application(company: str, jd_path: str, role_title: str | None = None
     else:
         return {"error": f"Unsupported JD format: {jd_source.suffix}. Use PDF or Markdown."}
 
-    # Extract role title from first line or filename if not provided
+    # Extract role title from first line or filename if not provided (display only)
     if not role_title:
         first_line = jd_text.strip().split("\n")[0] if jd_text else ""
         if first_line and len(first_line) < 200:
@@ -225,15 +516,21 @@ def create_application(company: str, jd_path: str, role_title: str | None = None
 
 
 @mcp.tool()
-def get_application_status(company: str) -> dict:
+def get_application_status(company: str, role_title: str | None = None) -> dict:
     """Check the status of a job application workflow.
 
     Returns which files exist, what's been completed, and what steps remain.
 
     Args:
         company: Target employer name (e.g., "Gartner").
+        role_title: Optional role title, required to disambiguate companies
+            with multiple tracked roles.
     """
-    company_dir = BASE_DIR / company
+    tracker = _load_tracker()
+    try:
+        company_dir = _resolve_company_folder(company, role_title, tracker)
+    except AmbiguousRoleError as e:
+        return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
     if not company_dir.exists():
         return {
             "company": company,
@@ -303,7 +600,7 @@ def company_research(company: str, focus: str = "general") -> dict:
         focus: Area to emphasize in research (e.g., "AI strategy", "public sector",
                "competitors"). Default: "general".
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -345,7 +642,7 @@ def save_research(company: str, content: str, focus: str = "general") -> dict:
         content: The research content in Markdown format.
         focus: Research focus area. Default: "general".
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -375,7 +672,7 @@ def map_territory(company: str, accounts: list[str]) -> dict:
                   (e.g., ["MTI", "GovTech", "MAS"]). These are the organizations
                   where you want to find your contacts.
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -426,7 +723,7 @@ def save_territory_map(company: str, content: str) -> dict:
         company: Target employer name (e.g., "Gartner").
         content: The territory map content in Markdown format.
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -455,7 +752,7 @@ def generate_cover_letter(company: str, tone: str = "storyteller") -> dict:
         tone: Writing tone: "bold", "conservative", or "storyteller" (default).
               Storyteller uses the user's established "Ground Truth" framing.
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -521,7 +818,7 @@ def save_cover_letter(company: str, content: str, tone: str = "storyteller") -> 
         content: The cover letter content in Markdown format.
         tone: The tone used (for the file header).
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found."}
 
@@ -556,7 +853,7 @@ def generate_pitch(company: str, format: str = "narrative") -> dict:
         company: Target employer name (e.g., "Gartner").
         format: Output format: "narrative", "bullet_points", or "star_stories" (default: "narrative").
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -615,7 +912,7 @@ def save_pitch(company: str, content: str, format: str = "narrative") -> dict:
         content: The pitch content in Markdown format.
         format: The format used (for the file header).
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found."}
 
@@ -641,7 +938,7 @@ def tailor_cv(company: str) -> dict:
     Args:
         company: Target employer name (e.g., "Gartner").
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found. Call create_application first."}
 
@@ -698,7 +995,7 @@ def save_tailored_cv(company: str, content: str) -> dict:
         company: Target employer name.
         content: The tailored CV content in Markdown format.
     """
-    company_dir = BASE_DIR / company
+    company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
         return {"error": f"Company folder '{company}' not found."}
 

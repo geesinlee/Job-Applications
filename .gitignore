@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 .DS_Store
+.env
+tracker.json
+profile.json
