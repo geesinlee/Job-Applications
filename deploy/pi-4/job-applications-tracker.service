@@ -1,6 +1,7 @@
 [Unit]
 Description=Job Applications Daily Tracker Run
-After=network.target
+After=network.target nfs-client.target
+RequiresMountsFor=/mnt/job-app-data
 
 [Service]
 WorkingDirectory=/home/gs/Projects/Job-Applications

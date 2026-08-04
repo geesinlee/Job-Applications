@@ -43,7 +43,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # ---------------------------------------------------------------------------
 # Configuration — env vars with __file__-relative fallbacks
@@ -329,6 +329,7 @@ def _cancel_followup_emails(app: dict) -> None:
 
 MCP_HTTP_HOST = "0.0.0.0"
 MCP_HTTP_PORT = 8086
+MCP_PUBLIC_HOST = os.environ.get("MCP_PUBLIC_HOST", "localhost")  # externally reachable host:port for OAuth resource metadata
 
 
 class _StaticBearerVerifier(TokenVerifier):
@@ -346,7 +347,7 @@ if MCP_MODE == "http":
             "[job-applications] ERROR: MCP_MODE=http requires MCP_AUTH_TOKEN to be set.\n"
         )
         sys.exit(1)
-    _resource_url = f"http://gs-pi-4.local:{MCP_HTTP_PORT}"
+    _resource_url = f"http://{MCP_PUBLIC_HOST}:{MCP_HTTP_PORT}"
     mcp = FastMCP(
         "job-applications",
         host=MCP_HTTP_HOST,

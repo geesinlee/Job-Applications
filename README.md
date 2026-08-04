@@ -102,19 +102,64 @@ profile.json                           # Candidate profile (gitignored)
 
 - **pi-4 is the always-on host.** `job-applications-mcp.service` runs the
   server in `MCP_MODE=http` on `0.0.0.0:8086`, bearer-token authenticated
-  (`MCP_AUTH_TOKEN`). `tracker.json` and `profile.json` live on pi-4's local
-  disk; company artefact folders currently live alongside them under the
-  same repo checkout on pi-4 (`JOB_APP_BASE_DIR=/home/gs/Projects/Job-Applications`).
+  (`MCP_AUTH_TOKEN`).
+- **Data lives on the NAS** (`rv-cloud.local:/share/job-app-data`) via NFS
+  mount at `/mnt/job-app-data` on pi-4 (and optionally on the Mac). Both
+  `JOB_APP_BASE_DIR` and `JOB_APP_ARTEFACTS_DIR` point to this mount, so
+  `tracker.json`, `profile.json`, and all company artefact folders are
+  consistent regardless of which host runs the server. The `NAS_SYNC_PATH`
+  env var is no longer needed — data is written directly to the NAS.
 - **`job-applications-tracker.timer`** fires `tracker_daily.py` daily at
-  07:00 on pi-4: flags overdue follow-ups, rsyncs `tracker.json`/`profile.json`
-  to `NAS_SYNC_PATH` if set, and emails a digest to `DIGEST_EMAIL` via
-  `smtplib`/`GMAIL_APP_PASSWORD` if both are set (skips silently, logs to
-  `tracker_daily.log`, otherwise).
+  07:00 on pi-4: flags overdue follow-ups and emails a digest to `DIGEST_EMAIL`
+  via `smtplib`/`GMAIL_APP_PASSWORD` (skips sending if unset).
 - **The Mac is transient — it runs no always-on services.** The Mac's Claude
   Code session talks to pi-4 over HTTP; see `.mcp.json`'s `job-applications`
   entry (`http://gs-pi-4.local:8086/mcp`, bearer auth via `${MCP_AUTH_TOKEN}`).
+  Claude Desktop also connects to pi-4 via `mcp-remote`.
 - pi-3 does not run this workload (armv7l 32-bit, 921 MB is insufficient for
   FastMCP + weasyprint + python-docx).
+
+### NAS-Shared Storage Setup
+
+All data paths point to an NFS-mounted NAS share to ensure consistency
+between Mac and pi-4:
+
+```
+rv-cloud.local:/share/job-app-data  →  /mnt/job-app-data  (NFS mount)
+```
+
+**pi-4 fstab entry:**
+```
+192.168.10.109:/share/job-app-data  /mnt/job-app-data  nfs  rw,_netdev,auto  0 0
+```
+
+**Mac automount (optional, for local stdio access):**
+Follow the existing `auto_obsidian` pattern in `/etc/auto_master`, or mount
+manually: `mount -t nfs 192.168.10.109:/share/job-app-data /mnt/job-app-data`
+
+If NFS is unavailable from macOS, SMB works as a fallback:
+`mount_smbfs //gs@rv-cloud.local/job-app-data /mnt/job-app-data`
+
+**pi-4 `.env` (NAS paths):**
+```env
+JOB_APP_BASE_DIR=/mnt/job-app-data
+JOB_APP_ARTEFACTS_DIR=/mnt/job-app-data
+JOB_APP_TRACKER_PATH=/mnt/job-app-data/tracker.json
+JOB_APP_PROFILE_PATH=/mnt/job-app-data/profile.json
+JOB_APP_BASE_CV_PATH=/mnt/job-app-data/DXC/CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md
+NAS_SYNC_PATH=
+```
+
+**Data migration (one-time, pi-4 → NAS):**
+```bash
+rsync -av /home/gs/Projects/Job-Applications/tracker.json /mnt/job-app-data/
+rsync -av /home/gs/Projects/Job-Applications/profile.json /mnt/job-app-data/
+for dir in /home/gs/Projects/Job-Applications/*/; do
+  dirname=$(basename "$dir")
+  case "$dirname" in deploy|.git|.venv|__pycache__|test*) continue ;; esac
+  rsync -av "$dir" /mnt/job-app-data/"$dirname"/
+done
+```
 
 ## Setup
 
@@ -127,11 +172,14 @@ Key env vars (see `.env.example` for the full list and defaults):
 
 | Var | Purpose |
 |-----|---------|
-| `JOB_APP_BASE_DIR` | Base directory for `tracker.json`/`profile.json` and company folders |
+| `JOB_APP_BASE_DIR` | Base directory for `tracker.json`/`profile.json` and company folders. NFS mount on pi-4: `/mnt/job-app-data` |
 | `JOB_APP_ARTEFACTS_DIR` | Directory for per-company artefact folders (defaults to `JOB_APP_BASE_DIR`) |
+| `JOB_APP_TRACKER_PATH` | Explicit path to `tracker.json` (defaults to `JOB_APP_BASE_DIR/tracker.json`) |
+| `JOB_APP_PROFILE_PATH` | Explicit path to `profile.json` (defaults to `JOB_APP_BASE_DIR/profile.json`) |
+| `JOB_APP_BASE_CV_PATH` | Path to the base/master CV for tailoring |
 | `MCP_MODE` | `stdio` (local Claude session, default) or `http` (always-on service) |
 | `MCP_AUTH_TOKEN` | Bearer token required for HTTP mode; generate with `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` |
-| `NAS_SYNC_PATH` | rsync destination for `tracker.json`/`profile.json` backups (optional) |
+| `NAS_SYNC_PATH` | ~~rsync destination~~ **No longer needed** when using NAS-shared storage. Leave empty. |
 | `DIGEST_EMAIL` / `GMAIL_APP_PASSWORD` | Daily digest email recipient/credential for `tracker_daily.py` (optional; digest just skips sending if unset) |
 
 ## Running
@@ -155,18 +203,52 @@ curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8086/mcp
 
 ## Deploy Steps (pi-4)
 
+### Prerequisites: NFS mount
+
+Ensure `/mnt/job-app-data` is mounted before starting the service:
+
 ```bash
+# On pi-4 — add to /etc/fstab (if not already present)
+echo '192.168.10.109:/share/job-app-data  /mnt/job-app-data  nfs  rw,_netdev,auto  0 0' | sudo tee -a /etc/fstab
+sudo mkdir -p /mnt/job-app-data
+sudo mount /mnt/job-app-data
+```
+
+### Initial data migration (one-time)
+
+If data exists on pi-4's local disk, migrate it to the NAS share:
+
+```bash
+rsync -av /home/gs/Projects/Job-Applications/tracker.json /mnt/job-app-data/
+rsync -av /home/gs/Projects/Job-Applications/profile.json /mnt/job-app-data/
+for dir in /home/gs/Projects/Job-Applications/*/; do
+  dirname=$(basename "$dir")
+  case "$dirname" in deploy|.git|.venv|__pycache__|test*) continue ;; esac
+  rsync -av "$dir" /mnt/job-app-data/"$dirname"/
+done
+```
+
+### Service deployment
+
+```bash
+# From Mac — rsync the code
 rsync -av --exclude venv --exclude .env ./ gs@gs-pi-4.local:~/Projects/Job-Applications/
+
+# On pi-4 — deploy
 ssh gs@gs-pi-4.local
 cd ~/Projects/Job-Applications
 python3 -m venv venv && venv/bin/pip install -r requirements.txt
-# copy/edit .env with real MCP_AUTH_TOKEN, DIGEST_EMAIL, GMAIL_APP_PASSWORD, etc.
+# copy/edit .env with NAS paths and real tokens
 mkdir -p ~/.config/systemd/user
 cp deploy/pi-4/job-applications-mcp.service deploy/pi-4/job-applications-tracker.service \
    deploy/pi-4/job-applications-tracker.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now job-applications-mcp.service
 systemctl --user enable --now job-applications-tracker.timer
+
+# Verify
+systemctl --user status job-applications-mcp.service
+curl -H "Authorization: Bearer $MCP_AUTH_TOKEN" http://localhost:8086/mcp
 ```
 
 ## Testing

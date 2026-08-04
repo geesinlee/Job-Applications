@@ -1,13 +1,14 @@
 [Unit]
 Description=Job Applications MCP Server
-After=network.target
+After=network.target nfs-client.target
+RequiresMountsFor=/mnt/job-app-data
 
 [Service]
 WorkingDirectory=/home/gs/Projects/Job-Applications
 ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python \
           job_applications_mcp_server.py
 Environment=MCP_MODE=http
-Environment=JOB_APP_BASE_DIR=/home/gs/Projects/Job-Applications
+Environment=JOB_APP_BASE_DIR=/mnt/job-app-data
 EnvironmentFile=/home/gs/Projects/Job-Applications/.env
 Restart=on-failure
 RestartSec=10
