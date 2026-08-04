@@ -82,6 +82,16 @@ ssh gs@gs-pi-4.local  # then: systemctl --user restart job-applications-mcp.serv
 | `MCP_AUTH_TOKEN` | Bearer token (HTTP mode) | Set in .env | Not needed |
 | `NAS_SYNC_PATH` | rsync destination (legacy) | Empty (data on NAS directly) | Empty |
 
+## Context Maintenance
+
+At the end of substantial development work:
+
+- Update `docs/CURRENT_STATE.md` if project status, active work, known issues, or next steps changed.
+- Update `docs/ARCHITECTURE.md` when system architecture or major component relationships change.
+- Update `docs/DECISIONS.md` when a significant architectural or implementation decision is made.
+- Keep these documents consistent with the actual codebase.
+- Never record assumptions as established facts.
+
 ## Things Agents Should NOT Do
 
 - **Do not** commit `.env`, `tracker.json`, `profile.json`, or `tracker_daily.log` — they are gitignored runtime data.
