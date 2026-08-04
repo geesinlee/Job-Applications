@@ -82,6 +82,18 @@ ssh gs@gs-pi-4.local  # then: systemctl --user restart job-applications-mcp.serv
 | `MCP_AUTH_TOKEN` | Bearer token (HTTP mode) | Set in .env | Not needed |
 | `NAS_SYNC_PATH` | rsync destination (legacy) | Empty (data on NAS directly) | Empty |
 
+## Ingest JD Sources
+
+`ingest_jd` accepts three mutually exclusive content sources:
+
+| Parameter | Content source | Use case |
+|-----------|---------------|----------|
+| `jd_path` | Local file (PDF, Markdown, TXT) | JD saved to disk |
+| `jd_url` | URL fetched and parsed | Job posting URL |
+| `jd_text` | Pasted text directly | URL blocked or not available |
+
+`jd_url` can be provided alongside `jd_text` as a reference/provenance URL — it's stored in the tracker record as `jd_source_url` but not fetched. This is useful when a JD was found at a URL but couldn't be scraped (login walls, blocked domains).
+
 ## Context Maintenance
 
 At the end of substantial development work:

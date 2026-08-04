@@ -555,6 +555,73 @@ class TestIngestJd:
         assert result["fields"]["required_skills"] == []
         assert result["fields"]["preferred_skills"] == []
 
+    def test_ingest_from_pasted_text(self, tmp_path):
+        from job_applications_mcp_server import ingest_jd, _load_tracker
+        jd_content = (
+            "# Senior Account Executive\n"
+            "Location: Singapore\n"
+            "Employment Type: Full-time\n"
+            "Requires 8 years of experience\n"
+            "Required Skills:\n- Enterprise Sales\n- Public Sector\n"
+        )
+        result = ingest_jd("TestCo", "Senior Account Executive", jd_text=jd_content)
+        assert result["ok"] is True
+        assert result["stage"] == "new"
+        assert result["fields"]["location"] == "Singapore"
+        assert result["fields"]["years_of_experience"] == 8
+        assert result["fields"]["required_skills"] == ["Enterprise Sales", "Public Sector"]
+        assert (Path(result["folder_path"]) / "JD.md").exists()
+        assert (Path(result["folder_path"]) / "JD.md").read_text() == jd_content
+        tracker = _load_tracker()
+        assert len(tracker["applications"]) == 1
+
+    def test_ingest_pasted_text_with_reference_url(self, tmp_path):
+        from job_applications_mcp_server import ingest_jd, _load_tracker
+        jd_content = "# Product Manager\nLocation: Remote\n"
+        result = ingest_jd(
+            "AcmeCorp", "Product Manager",
+            jd_text=jd_content,
+            jd_url="https://acme.com/jobs/pm-123",
+        )
+        assert result["ok"] is True
+        assert result["jd_source_url"] == "https://acme.com/jobs/pm-123"
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert app["jd_source_url"] == "https://acme.com/jobs/pm-123"
+        # Content should be the pasted text, not fetched from URL
+        assert (Path(result["folder_path"]) / "JD.md").read_text() == jd_content
+
+    def test_ingest_pasted_text_no_reference_url(self, tmp_path):
+        from job_applications_mcp_server import ingest_jd, _load_tracker
+        jd_content = "# Data Engineer\nSpark, Python, SQL\n"
+        result = ingest_jd("DataCo", "Data Engineer", jd_text=jd_content)
+        assert result["ok"] is True
+        assert "jd_source_url" not in result
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "jd_source_url" not in app
+
+    def test_ingest_pasted_text_with_file_path_is_error(self, tmp_path):
+        from job_applications_mcp_server import ingest_jd
+        result = ingest_jd(
+            "TestCo", "Some Role",
+            jd_path=str(tmp_path / "jd.md"),
+            jd_text="Some pasted text",
+        )
+        assert result["ok"] is False
+        assert result["error"] == "both_sources_given"
+
+    def test_ingest_pasted_text_with_url_and_file_path_is_error(self, tmp_path):
+        from job_applications_mcp_server import ingest_jd
+        result = ingest_jd(
+            "TestCo", "Some Role",
+            jd_path=str(tmp_path / "jd.md"),
+            jd_text="Pasted text",
+            jd_url="https://example.com/jd",
+        )
+        assert result["ok"] is False
+        assert result["error"] == "both_sources_given"
+
     def test_duplicate_ingest_preserves_stage(self, tmp_path):
         from job_applications_mcp_server import ingest_jd, update_stage, _load_tracker
         jd_file = tmp_path / "jd.md"

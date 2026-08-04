@@ -1412,26 +1412,45 @@ def ingest_jd(
     role_title: str,
     jd_path: str | None = None,
     jd_url: str | None = None,
+    jd_text: str | None = None,
 ) -> dict:
-    """Ingest a job description from a file or URL and create/update its tracker record.
+    """Ingest a job description and create/update its tracker record.
 
-    Exactly one of jd_path or jd_url must be given. Writes JD.md into the
-    resolved company/role folder, creates a new 'new'-stage tracker record
-    (or updates jd_path on an existing one, preserving its current stage),
-    and returns the regex-extracted structured fields alongside the record.
+    Exactly one content source must be given: jd_path (file), jd_url (fetch),
+    or jd_text (pasted text). When jd_text is provided, jd_url may also be
+    given as a reference/provenance URL (the URL is stored but not fetched).
+    Writes JD.md into the resolved company/role folder, creates a new
+    'new'-stage tracker record (or updates an existing one, preserving its
+    current stage), and returns the regex-extracted structured fields.
 
     Args:
         company: Target employer name.
         role_title: Role title — used for tracker lookup and folder resolution.
-        jd_path: Path to a local JD file (PDF or Markdown). Mutually exclusive with jd_url.
-        jd_url: URL of a JD posting to fetch and parse. Mutually exclusive with jd_path.
+        jd_path: Path to a local JD file (PDF or Markdown). Content source.
+        jd_url: URL of a JD posting to fetch and parse. Content source unless
+            jd_text is also given, in which case this is stored as a reference.
+        jd_text: Pasted JD text. Content source. When given alongside jd_url,
+            the URL is recorded as provenance metadata but not fetched.
     """
-    if jd_path and jd_url:
-        return {"ok": False, "error": "both_sources_given"}
-    if not jd_path and not jd_url:
+    content_sources = sum(1 for s in (jd_path, jd_url, jd_text) if s)
+    if content_sources == 0:
         return {"ok": False, "error": "no_source_given"}
+    if content_sources > 1 and not (jd_text and jd_url and not jd_path):
+        # Only jd_text + jd_url is allowed together (pasted text + reference URL).
+        # Any other combination of multiple sources is ambiguous.
+        if jd_path and jd_url:
+            return {"ok": False, "error": "both_sources_given"}
+        if jd_path and jd_text:
+            return {"ok": False, "error": "both_sources_given",
+                    "message": "Provide jd_path or jd_text, not both"}
+        return {"ok": False, "error": "both_sources_given"}
 
-    if jd_path:
+    # Determine content source and reference URL
+    reference_url = None
+    if jd_text:
+        # Pasted text — use directly; jd_url (if given) is provenance only
+        reference_url = jd_url  # may be None
+    elif jd_path:
         jd_source = Path(jd_path)
         if not jd_source.exists():
             return {"ok": False, "error": "file_not_found", "jd_path": jd_path}
@@ -1445,6 +1464,7 @@ def ingest_jd(
         else:
             return {"ok": False, "error": "unsupported_format", "jd_path": jd_path}
     else:
+        # jd_url only — fetch it
         try:
             jd_text = _ingest_jd_url(jd_url)
         except requests.RequestException as e:
@@ -1467,11 +1487,16 @@ def ingest_jd(
     else:
         app = _create_application_record(company, role_title, str(jd_md))
         tracker.setdefault("applications", []).append(app)
+
+    # Store reference URL as provenance metadata when jd_text was used with jd_url
+    if reference_url:
+        app["jd_source_url"] = reference_url
+
     _save_tracker(tracker)
 
     fields = _parse_jd_fields(jd_text)
 
-    return {
+    result = {
         "ok": True,
         "application_id": app["id"],
         "company": company,
@@ -1482,6 +1507,9 @@ def ingest_jd(
         "jd_length": len(jd_text),
         "fields": fields,
     }
+    if reference_url:
+        result["jd_source_url"] = reference_url
+    return result
 
 
 @mcp.tool()

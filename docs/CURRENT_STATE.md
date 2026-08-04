@@ -114,3 +114,19 @@
 5. **Remove Glean "Role TBC" stub** — The remaining Glean entry at index 3 has a placeholder role title. Update with actual title or remove if no longer relevant.
 
 6. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
+
+7. **Deploy `ingest_jd` jd_text enhancement** — The new `jd_text` parameter allows pasting JD text directly and optionally recording a reference URL. Needs rsync to pi-4 and service restart.
+
+8. **Fix umask `0177` bug** — Claude Code sessions inherit umask 0177 (should be 0022), breaking mkdir/git/npm. Root cause is Claude Code's process environment, not shell config. Workaround: `umask 0022` at session start.
+
+1. **Task 11: LinkedIn job-alert discovery** — Implement Gmail API OAuth for automated JD ingestion from LinkedIn job-alert emails. Design spec in `.kiro/specs/job-application-agent/tasks.md`.
+
+2. **Fix `DXC/.venv`** — Remove or gitignore the committed venv inside the DXC company folder.
+
+3. **Gitignore company folders** — Decide whether to track company artefact folders in git or explicitly gitignore them (they're currently untracked).
+
+4. **Investigate mcp-remote stability** — Debug the intermittent tool call failures in Claude Desktop.
+
+5. **Remove Glean "Role TBC" stub** — The remaining Glean entry at index 3 has a placeholder role title. Update with actual title or remove if no longer relevant.
+
+6. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
