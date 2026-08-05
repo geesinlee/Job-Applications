@@ -33,7 +33,9 @@
 
 - **MCP server** running on pi-4 as `job-applications-mcp.service` (HTTP :8086, bearer auth)
 - **Daily digest** via `job-applications-tracker.timer` (07:00, emails overdue follow-ups)
-- **All 22 MCP tools** functional and tested (including `ingest_jd` with `jd_text` parameter and `jd_content_too_short` guard)
+- **24 MCP tools** functional and tested (including `ingest_jd` with `jd_text` parameter, `save_interview_notes`, `mark_submitted`)
+- **Output tracking** — all `save_*` functions record outputs in tracker `outputs` dict
+- **Submitted folder** — `mark_submitted` snapshots CV/cover letter to `submitted/` subfolder
 - **NAS data storage** at `/mnt/job-app-data` (NFS mount from rv-cloud.local)
 - **Claude Desktop** connects via `mcp-remote` to `gs-pi-4.local:8086/mcp`
 - **Claude Code** connects via HTTP (`.mcp.json` config)

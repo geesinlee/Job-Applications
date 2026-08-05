@@ -10,11 +10,11 @@ MCP server for managing the full job-application lifecycle: JD ingestion, profil
 
 ```
 Job-Applications/
-├── job_applications_mcp_server.py   # Main server — 22 MCP tools, all in one file
+├── job_applications_mcp_server.py   # Main server — 24 MCP tools, all in one file
 ├── tracker_daily.py                 # Standalone daily digest (stdlib only, no FastMCP)
 ├── requirements.txt                 # Pinned deps (fastmcp>=2.0,<3 fleet-wide)
 ├── conftest.py                      # Autouse fixture isolating paths to tmp_path
-├── test_mcp_server.py               # Integration/unit tests (19 classes)
+├── test_mcp_server.py               # Integration/unit tests (22 classes)
 ├── test_tracker_daily.py             # Daily digest tests
 ├── .env.example                     # All env vars documented
 ├── .mcp.json                        # MCP server config (HTTP to pi-4)
@@ -93,6 +93,39 @@ ssh gs@gs-pi-4.local  # then: systemctl --user restart job-applications-mcp.serv
 | `jd_text` | Pasted text directly | URL blocked or not available |
 
 `jd_url` can be provided alongside `jd_text` as a reference/provenance URL — it's stored in the tracker record as `jd_source_url` but not fetched. This is useful when a JD was found at a URL but couldn't be scraped (login walls, blocked domains).
+
+## Output Tracking
+
+Every `save_*` function records its output in the tracker record's `outputs` dict. This provides an audit trail of what was generated, when, and where:
+
+```json
+"outputs": {
+  "research": [{"path": "...", "saved_at": "..."}],
+  "cover_letter": [{"path": "...", "saved_at": "...", "version": 1}],
+  "tailored_cv": [{"path": "...", "saved_at": "..."}],
+  "match_score": [{"overall": 78, "saved_at": "..."}],
+  "interview_notes": [{"path": "...", "saved_at": "...", "section": "Round 2"}]
+}
+```
+
+`get_application_status` returns `outputs`, `submitted`, and `submitted_files` in its response.
+
+## Submitted Documents
+
+`mark_submitted` snapshots the current tailored CV and/or cover letter into a `submitted/` subfolder inside the company directory, and records the submission in the tracker's `submitted` dict:
+
+```json
+"submitted": {
+  "cv": {"path": "Gartner/submitted/CV_tailored.md", "submitted_at": "..."},
+  "cover_letter": {"path": "Gartner/submitted/Cover_Letter.md", "submitted_at": "..."}
+}
+```
+
+This creates a permanent record of exactly which documents were sent to the employer. Re-submitting overwrites the snapshot with a new timestamp.
+
+## Interview Notes
+
+`save_interview_notes` creates or appends to `interview_notes.md` in the company folder. Notes are appended under timestamped headings, preserving the full history. An optional `section` parameter adds a sub-heading (e.g., "Recruiter call", "Round 2 feedback").
 
 ## Context Maintenance
 
