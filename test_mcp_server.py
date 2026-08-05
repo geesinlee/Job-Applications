@@ -523,7 +523,7 @@ class TestIngestJd:
         from job_applications_mcp_server import ingest_jd
         monkeypatch.setattr(
             "job_applications_mcp_server._ingest_jd_url",
-            lambda url: "Senior Sales Engineer\nLocation: Remote\n",
+            lambda url: "Senior Sales Engineer\nLocation: Remote\nRequired Skills: Python, SQL\nPreferred Skills: AWS, Docker\n",
         )
         result = ingest_jd("TestCo", "Senior Sales Engineer", jd_url="https://example.com/job/123")
         assert result["ok"] is True
@@ -621,6 +621,24 @@ class TestIngestJd:
         )
         assert result["ok"] is False
         assert result["error"] == "both_sources_given"
+
+    def test_ingest_url_content_too_short(self, tmp_path, monkeypatch):
+        """URL-fetched content that returns only a page title should be rejected."""
+        from job_applications_mcp_server import ingest_jd
+        monkeypatch.setattr(
+            "job_applications_mcp_server._ingest_jd_url",
+            lambda url: "Meta Careers",  # JS-rendered page returns only title
+        )
+        result = ingest_jd("Meta", "Technical Sales", jd_url="https://meta.com/careers/123")
+        assert result["ok"] is False
+        assert result["error"] == "jd_content_too_short"
+        assert result["jd_length"] == len("Meta Careers")  # stripped length
+
+    def test_ingest_pasted_text_short_is_allowed(self, tmp_path):
+        """Pasted text is trusted even if short — the user knows what they're pasting."""
+        from job_applications_mcp_server import ingest_jd
+        result = ingest_jd("TestCo", "Some Role", jd_text="Short JD text")
+        assert result["ok"] is True
 
     def test_duplicate_ingest_preserves_stage(self, tmp_path):
         from job_applications_mcp_server import ingest_jd, update_stage, _load_tracker

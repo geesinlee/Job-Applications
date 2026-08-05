@@ -1470,6 +1470,25 @@ def ingest_jd(
         except requests.RequestException as e:
             return {"ok": False, "error": "url_error", "detail": str(e), "jd_url": jd_url}
 
+        # Guard against JS-rendered pages that return only a title like "Meta Careers".
+        # Only checked for URL-fetched content — users know what they're pasting or
+        # providing as a file, but URL scraping can silently return useless content.
+        MIN_URL_JD_LENGTH = 50
+        if len(jd_text.strip()) < MIN_URL_JD_LENGTH:
+            return {
+                "ok": False,
+                "error": "jd_content_too_short",
+                "message": (
+                    f"URL returned only {len(jd_text.strip())} characters — likely a page "
+                    f"title or navigation text rather than the actual job description. "
+                    f"This usually happens when the job posting uses JavaScript rendering "
+                    f"(e.g. LinkedIn, Meta, Workday). Try using jd_text to paste the "
+                    f"JD content directly instead."
+                ),
+                "jd_length": len(jd_text.strip()),
+                "source": "jd_url",
+            }
+
     tracker = _load_tracker()
     try:
         company_dir = _resolve_company_folder(company, role_title, tracker)
