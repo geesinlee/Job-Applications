@@ -37,9 +37,9 @@ graph TB
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| MCP Server | `job_applications_mcp_server.py` | 22 tools, startup validation, state I/O |
+| MCP Server | `job_applications_mcp_server.py` | 24 tools, startup validation, state I/O |
 | Daily Tracker | `tracker_daily.py` | Overdue follow-ups, email digest, NAS backup |
-| Tests | `test_mcp_server.py`, `test_tracker_daily.py` | 19 test classes, path isolation via conftest |
+| Tests | `test_mcp_server.py`, `test_tracker_daily.py` | 22 test classes, path isolation via conftest |
 | Systemd Units | `deploy/pi-4/*.service`, `*.timer` | Always-on service + daily timer |
 
 ## MCP Tool Groups
@@ -62,6 +62,12 @@ graph TB
 ### Research
 `company_research` → `save_research`, `map_territory` → `save_territory_map`
 
+### Interview Notes
+`save_interview_notes` (append-style, timestamped headings)
+
+### Submission Tracking
+`mark_submitted` (copies CV/cover letter to `submitted/` folder, records in tracker)
+
 ### Export
 `export_document` (PDF via weasyprint, DOCX via python-docx)
 
@@ -80,9 +86,21 @@ graph TB
     "date_created": "2026-05-28T23:17:00Z",
     "stage": "applied",
     "jd_path": "/mnt/job-app-data/Gartner/JD.md",
+    "jd_source_url": "https://jobs.gartner.com/...",
     "match_score": { "overall": 75, "sub_scores": {}, "computed_at": "..." },
     "history": [{ "stage": "new", "at": "..." }],
-    "followups": [{ "id": "uuid4", "action_type": "send_follow_up_email", "due_date": "2026-06-04", "status": "cancelled" }]
+    "followups": [{ "id": "uuid4", "action_type": "send_follow_up_email", "due_date": "2026-06-04", "status": "cancelled" }],
+    "outputs": {
+      "research": [{"path": "...", "saved_at": "..."}],
+      "tailored_cv": [{"path": "...", "saved_at": "..."}],
+      "cover_letter": [{"path": "...", "saved_at": "...", "version": 1}],
+      "match_score": [{"overall": 75, "saved_at": "..."}],
+      "interview_notes": [{"path": "...", "saved_at": "...", "section": "Recruiter call"}]
+    },
+    "submitted": {
+      "cv": {"path": "Gartner/submitted/CV_tailored.md", "submitted_at": "..."},
+      "cover_letter": {"path": "Gartner/submitted/Cover_Letter.md", "submitted_at": "..."}
+    }
   }]
 }
 ```
