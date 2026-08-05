@@ -18,6 +18,7 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import uuid
@@ -266,7 +267,20 @@ def _create_application_record(company: str, role_title: str, jd_path: str) -> d
         "date_created": now,
         "history": [{"stage": "new", "at": now}],
         "followups": [],
+        "outputs": {},
+        "submitted": {},
     }
+
+
+def _record_output(tracker: dict, company: str, role_title: str | None,
+                   output_type: str, entry: dict) -> None:
+    """Append an output entry to the tracker record for the given application.
+
+    No-op if the application record is not found (legacy folders without tracker records).
+    """
+    app = _find_application(tracker, company, role_title)
+    if app is not None:
+        app.setdefault("outputs", {}).setdefault(output_type, []).append(entry)
 
 
 # ---------------------------------------------------------------------------
@@ -1211,6 +1225,9 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
         "cover_letter": any("cover" in f.lower() or "letter" in f.lower() for f in files),
         "pitch": "pitch.md" in files,
         "tailored_cv": "CV_tailored.md" in files,
+        "gap_analysis": "gap_analysis.md" in files,
+        "learning_program": "learning_program.md" in files,
+        "interview_notes": "interview_notes.md" in files,
     }
 
     completed = [step for step, done in steps.items() if done]
@@ -1229,6 +1246,10 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
         next_action = "generate_cover_letter"
     elif not steps["tailored_cv"]:
         next_action = "tailor_cv"
+    elif not steps["gap_analysis"]:
+        next_action = "analyse_gaps"
+    elif not steps["learning_program"]:
+        next_action = "generate_learning_program"
     else:
         next_action = "All steps completed!"
 
@@ -1254,8 +1275,19 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
         result["stage"] = app.get("stage")
         result["date_created"] = app.get("date_created")
         result["followups"] = app.get("followups", [])
+        result["outputs"] = app.get("outputs", {})
+        result["submitted"] = app.get("submitted", {})
     else:
         result["tracked"] = False
+        result["outputs"] = {}
+        result["submitted"] = {}
+
+    # Check for submitted/ folder on disk
+    submitted_dir = company_dir / "submitted"
+    if submitted_dir.is_dir():
+        result["submitted_files"] = [f.name for f in submitted_dir.iterdir() if f.is_file()]
+    else:
+        result["submitted_files"] = []
 
     return result
 
@@ -1793,6 +1825,11 @@ def save_match_score(
         "missing_skills": missing_skills,
         "computed_at": computed_at,
     }
+    # Record output in tracker
+    _record_output(tracker, company, role_title, "match_score", {
+        "overall": overall,
+        "saved_at": computed_at,
+    })
     _save_tracker(tracker)
 
     return {
@@ -1934,6 +1971,13 @@ def save_gap_analysis(company: str, role_title: str, gaps: list) -> dict:
 
     output_path = company_dir / "gap_analysis.md"
     output_path.write_text("\n".join(lines), encoding="utf-8")
+
+    # Record output in tracker (tracker already loaded above)
+    _record_output(tracker, company, role_title, "gap_analysis", {
+        "path": str(output_path),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
 
     return {
         "ok": True,
@@ -2077,6 +2121,13 @@ def save_learning_program(company: str, role_title: str, program: list) -> dict:
     output_path = company_dir / "learning_program.md"
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
+    # Record output in tracker (tracker already loaded above)
+    _record_output(tracker, company, role_title, "learning_program", {
+        "path": str(output_path),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
+
     return {
         "ok": True,
         "company": company,
@@ -2150,6 +2201,14 @@ def save_research(company: str, content: str, focus: str = "general") -> dict:
     research_file = company_dir / "research.md"
     header = f"# {company} — Company Research\n\n> Generated: {datetime.now().strftime('%Y-%m-%d')} | Focus: {focus}\n\n"
     research_file.write_text(header + content, encoding="utf-8")
+
+    # Record output in tracker
+    tracker = _load_tracker()
+    _record_output(tracker, company, None, "research", {
+        "path": str(research_file),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
 
     return {
         "company": company,
@@ -2231,6 +2290,14 @@ def save_territory_map(company: str, content: str) -> dict:
     territory_file = company_dir / "territory_map.md"
     header = f"# {company} — Territory & Contact Map\n\n> Generated: {datetime.now().strftime('%Y-%m-%d')}\n\n"
     territory_file.write_text(header + content, encoding="utf-8")
+
+    # Record output in tracker
+    tracker = _load_tracker()
+    _record_output(tracker, company, None, "territory_map", {
+        "path": str(territory_file),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
 
     return {
         "company": company,
@@ -2356,6 +2423,16 @@ def save_cover_letter(company: str, content: str, tone: str = "storyteller") -> 
     header = f"# COVER LETTER: {company.upper()}\n\n> Tone: {tone} | Generated: {datetime.now().strftime('%Y-%m-%d')}\n\n"
     output_path.write_text(header + content, encoding="utf-8")
 
+    # Record output in tracker
+    version = len(list(company_dir.glob("Cover_Letter_v*.md"))) + 1  # current version (backup just moved, so +1)
+    tracker = _load_tracker()
+    _record_output(tracker, company, None, "cover_letter", {
+        "path": str(output_path),
+        "saved_at": _utc_now(),
+        "version": version,
+    })
+    _save_tracker(tracker)
+
     return {
         "company": company,
         "path": str(output_path),
@@ -2442,6 +2519,14 @@ def save_pitch(company: str, content: str, format: str = "narrative") -> dict:
     pitch_file = company_dir / "pitch.md"
     header = f"# {company} — Interview Pitch\n\n> Format: {format} | Generated: {datetime.now().strftime('%Y-%m-%d')}\n\n"
     pitch_file.write_text(header + content, encoding="utf-8")
+
+    # Record output in tracker
+    tracker = _load_tracker()
+    _record_output(tracker, company, None, "pitch", {
+        "path": str(pitch_file),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
 
     return {
         "company": company,
@@ -2590,6 +2675,14 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
     diff_body = "\n".join(diff_lines) if diff_lines else "(no changes recorded)"
     diff_path.write_text(f"# CV Diff Summary: {company}\n\n{diff_body}\n", encoding="utf-8")
 
+    # Record output in tracker
+    tracker = _load_tracker()
+    _record_output(tracker, company, None, "tailored_cv", {
+        "path": str(cv_file),
+        "saved_at": _utc_now(),
+    })
+    _save_tracker(tracker)
+
     return {
         "company": company,
         "path": str(cv_file),
@@ -2598,6 +2691,163 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
         "content_length": len(content),
         "saved": True,
     }
+
+
+@mcp.tool()
+def save_interview_notes(
+    company: str,
+    content: str,
+    section: str | None = None,
+    role_title: str | None = None,
+) -> dict:
+    """Save or append interview notes for a company's application.
+
+    Creates interview_notes.md if it doesn't exist, or appends under a
+    timestamped heading if it does. Optionally includes a section title
+    in the heading.
+
+    Args:
+        company: Target employer name.
+        content: The interview notes content in Markdown format.
+        section: Optional section title (e.g., "Recruiter call", "Round 2 feedback").
+        role_title: Role title to disambiguate multi-role companies.
+    """
+    tracker = _load_tracker()
+    company_dir = _resolve_company_folder(company, role_title, tracker)
+    company_dir.mkdir(parents=True, exist_ok=True)
+
+    notes_path = company_dir / "interview_notes.md"
+    timestamp = _utc_now()
+    section_title = f" — {section}" if section else ""
+
+    if notes_path.exists():
+        # Append under a new timestamped heading
+        existing = notes_path.read_text(encoding="utf-8")
+        new_entry = f"\n\n---\n\n## {timestamp}{section_title}\n\n{content}\n"
+        notes_path.write_text(existing + new_entry, encoding="utf-8")
+        appended = True
+    else:
+        # Create new file with header
+        header = f"# {company} — Interview Notes\n\n> Created: {datetime.now().strftime('%Y-%m-%d')}\n\n"
+        heading = f"## {timestamp}{section_title}\n\n"
+        notes_path.write_text(header + heading + content + "\n", encoding="utf-8")
+        appended = False
+
+    # Record output in tracker
+    _record_output(tracker, company, role_title, "interview_notes", {
+        "path": str(notes_path),
+        "saved_at": timestamp,
+        "section": section,
+        "appended": appended,
+    })
+    _save_tracker(tracker)
+
+    return {
+        "ok": True,
+        "company": company,
+        "role_title": role_title,
+        "path": str(notes_path),
+        "appended": appended,
+        "content_length": len(content),
+    }
+
+
+@mcp.tool()
+def mark_submitted(
+    company: str,
+    role_title: str | None = None,
+    document_types: list[str] | None = None,
+) -> dict:
+    """Mark CV and/or cover letter as submitted by copying to a submitted/ subfolder.
+
+    Copies the current tailored CV and/or cover letter into a 'submitted' subfolder
+    inside the company (or role) directory, creating a snapshot of the exact versions
+    that were sent to the employer. Records the submission in the tracker.
+
+    Args:
+        company: Target employer name.
+        role_title: Role title to disambiguate multi-role companies.
+        document_types: Which documents to submit. Default: ["cv", "cover_letter"].
+            Valid values: "cv", "cover_letter".
+    """
+    VALID_DOC_TYPES = {"cv", "cover_letter"}
+    if document_types is None:
+        document_types = ["cv", "cover_letter"]
+
+    invalid = [dt for dt in document_types if dt not in VALID_DOC_TYPES]
+    if invalid:
+        return {"ok": False, "error": "invalid_document_type", "invalid": invalid,
+                "valid_types": sorted(VALID_DOC_TYPES)}
+
+    tracker = _load_tracker()
+    app = _find_application(tracker, company, role_title)
+    if app is None:
+        # Try to resolve without tracker for legacy folders
+        company_dir = ARTEFACTS_DIR / company
+        if not company_dir.exists():
+            return {"ok": False, "error": "application_not_found",
+                    "company": company, "role_title": role_title}
+    else:
+        company_dir = _resolve_company_folder(company, role_title, tracker)
+
+    submitted_dir = company_dir / "submitted"
+    submitted_dir.mkdir(parents=True, exist_ok=True)
+
+    source_map = {
+        "cv": company_dir / "CV_tailored.md",
+        "cover_letter": company_dir / "Cover_Letter.md",
+    }
+
+    files_copied = []
+    errors = []
+
+    for doc_type in document_types:
+        source = source_map[doc_type]
+        if not source.exists():
+            errors.append({
+                "document_type": doc_type,
+                "error": "source_file_missing",
+                "path": str(source),
+            })
+            continue
+
+        if doc_type == "cv":
+            dest = submitted_dir / "CV_tailored.md"
+        elif doc_type == "cover_letter":
+            dest = submitted_dir / "Cover_Letter.md"
+
+        shutil.copy2(source, dest)
+        submitted_at = _utc_now()
+
+        if app is not None:
+            app.setdefault("submitted", {})[doc_type] = {
+                "path": str(dest),
+                "submitted_at": submitted_at,
+            }
+
+        files_copied.append({
+            "document_type": doc_type,
+            "source": str(source),
+            "dest": str(dest),
+            "submitted_at": submitted_at,
+        })
+
+    if app is not None:
+        _save_tracker(tracker)
+
+    if errors and not files_copied:
+        return {"ok": False, "error": "all_sources_missing", "details": errors}
+
+    result = {
+        "ok": True,
+        "company": company,
+        "role_title": role_title,
+        "files_copied": files_copied,
+        "submitted": app.get("submitted", {}) if app else {},
+    }
+    if errors:
+        result["warnings"] = errors
+    return result
 
 
 @mcp.tool()

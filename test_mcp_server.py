@@ -178,6 +178,8 @@ class TestGetApplicationStatus:
         (company_dir / "Cover_Letter.md").write_text("# Letter")
         (company_dir / "pitch.md").write_text("# Pitch")
         (company_dir / "CV_tailored.md").write_text("# CV")
+        (company_dir / "gap_analysis.md").write_text("# Gaps")
+        (company_dir / "learning_program.md").write_text("# Program")
         result = get_application_status("CompleteCo")
         assert result["next_action"] == "All steps completed!"
 
@@ -1700,3 +1702,251 @@ class TestStartupValidation:
         assert result.returncode == 0, result.stderr
         printed_path = result.stdout.strip().splitlines()[-1]
         assert Path(printed_path) == tmp_path
+
+
+class TestOutputTracking:
+    """Output tracking: save_* functions record entries in tracker outputs."""
+
+    def test_new_record_has_outputs_and_submitted(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        result = ingest_jd("TrackCo", "Engineer", jd_text="We need an engineer with Python skills")
+        assert result["ok"] is True
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "outputs" in app
+        assert app["outputs"] == {}
+        assert "submitted" in app
+        assert app["submitted"] == {}
+
+    def test_save_research_records_output(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_research, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("TrackCo", "Engineer", jd_text="We need an engineer")
+        result = save_research("TrackCo", "# Research\nContent here", focus="general")
+        assert result["saved"] is True
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "research" in app["outputs"]
+        assert len(app["outputs"]["research"]) == 1
+        assert "path" in app["outputs"]["research"][0]
+        assert "saved_at" in app["outputs"]["research"][0]
+
+    def test_save_tailored_cv_records_output(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_tailored_cv, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        monkeypatch.setattr("job_applications_mcp_server.BASE_CV_PATH", tmp_path / "base_cv.md")
+        (tmp_path / "base_cv.md").write_text("# Base CV\n10 years of experience\n$5M ARR\n")
+        ingest_jd("TrackCo", "Engineer", jd_text="We need an engineer")
+        result = save_tailored_cv("TrackCo", "# Tailored CV\n10 years of experience\n$5M ARR\n")
+        assert result["saved"] is True
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "tailored_cv" in app["outputs"]
+        assert len(app["outputs"]["tailored_cv"]) == 1
+
+    def test_save_cover_letter_records_output_with_version(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_cover_letter, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("TrackCo", "Engineer", jd_text="We need an engineer")
+        save_cover_letter("TrackCo", "# First letter\nContent")
+        save_cover_letter("TrackCo", "# Second letter\nContent")
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        cl_outputs = app["outputs"]["cover_letter"]
+        assert len(cl_outputs) == 2
+        assert cl_outputs[0]["version"] == 1
+        assert cl_outputs[1]["version"] == 2
+
+    def test_save_gap_analysis_records_output(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_gap_analysis, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("TrackCo", "Engineer", jd_text="We need an engineer")
+        gaps = [{"gap_id": "g1", "category": "missing", "jd_criterion": "AWS",
+                 "affected_cv_section": "Skills", "recommendation": "Get AWS cert"}]
+        result = save_gap_analysis("TrackCo", "Engineer", gaps)
+        assert result["ok"] is True
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "gap_analysis" in app["outputs"]
+        assert len(app["outputs"]["gap_analysis"]) == 1
+
+    def test_outputs_backward_compat_no_app(self, tmp_path, monkeypatch):
+        """Saving research for a company without a tracker record should not error."""
+        from job_applications_mcp_server import save_research, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        company_dir = tmp_path / "LegacyCo"
+        company_dir.mkdir()
+        result = save_research("LegacyCo", "# Research\nContent")
+        assert result["saved"] is True
+        # No tracker record was created, so no error should occur
+        tracker = _load_tracker()
+        assert len(tracker["applications"]) == 0
+
+
+class TestMarkSubmitted:
+    """mark_submitted tool: copy documents to submitted/ folder and track in tracker."""
+
+    def test_mark_submitted_cv_and_cover_letter(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_cover_letter, save_tailored_cv, mark_submitted, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        monkeypatch.setattr("job_applications_mcp_server.BASE_CV_PATH", tmp_path / "base_cv.md")
+        (tmp_path / "base_cv.md").write_text("# Base CV\n$5M ARR\n")
+        ingest_jd("SubCo", "Engineer", jd_text="We need an engineer")
+        save_tailored_cv("SubCo", "# Tailored CV\n$5M ARR\n")
+        save_cover_letter("SubCo", "# Cover letter\nContent")
+        result = mark_submitted("SubCo")
+        assert result["ok"] is True
+        assert len(result["files_copied"]) == 2
+        # Check submitted folder exists
+        submitted_dir = tmp_path / "SubCo" / "submitted"
+        assert submitted_dir.is_dir()
+        assert (submitted_dir / "CV_tailored.md").exists()
+        assert (submitted_dir / "Cover_Letter.md").exists()
+        # Check tracker
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "cv" in app["submitted"]
+        assert "cover_letter" in app["submitted"]
+
+    def test_mark_submitted_cv_only(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_tailored_cv, mark_submitted
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        monkeypatch.setattr("job_applications_mcp_server.BASE_CV_PATH", tmp_path / "base_cv.md")
+        (tmp_path / "base_cv.md").write_text("# Base CV\n$5M ARR\n")
+        ingest_jd("SubCo", "Engineer", jd_text="We need an engineer")
+        save_tailored_cv("SubCo", "# Tailored CV\n$5M ARR\n")
+        result = mark_submitted("SubCo", document_types=["cv"])
+        assert result["ok"] is True
+        assert len(result["files_copied"]) == 1
+        assert result["files_copied"][0]["document_type"] == "cv"
+
+    def test_mark_submitted_missing_cv(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, mark_submitted
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("SubCo", "Engineer", jd_text="We need an engineer")
+        result = mark_submitted("SubCo", document_types=["cv"])
+        assert result["ok"] is False
+        assert result["error"] == "all_sources_missing"
+
+    def test_mark_submitted_overwrites_previous(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_tailored_cv, mark_submitted, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        monkeypatch.setattr("job_applications_mcp_server.BASE_CV_PATH", tmp_path / "base_cv.md")
+        (tmp_path / "base_cv.md").write_text("# Base CV\n$5M ARR\n")
+        ingest_jd("SubCo", "Engineer", jd_text="We need an engineer")
+        save_tailored_cv("SubCo", "# Tailored CV v1\n$5M ARR\n")
+        result1 = mark_submitted("SubCo", document_types=["cv"])
+        assert result1["ok"] is True
+        first_submitted_at = result1["files_copied"][0]["submitted_at"]
+        # Submit again
+        result2 = mark_submitted("SubCo", document_types=["cv"])
+        assert result2["ok"] is True
+        second_submitted_at = result2["files_copied"][0]["submitted_at"]
+        assert second_submitted_at >= first_submitted_at
+        # Tracker should show updated timestamp
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert app["submitted"]["cv"]["submitted_at"] == second_submitted_at
+
+    def test_mark_submitted_invalid_doc_type(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import mark_submitted
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        result = mark_submitted("AnyCo", document_types=["resume"])
+        assert result["ok"] is False
+        assert result["error"] == "invalid_document_type"
+        assert "resume" in result["invalid"]
+
+
+class TestSaveInterviewNotes:
+    """save_interview_notes tool: create or append interview notes."""
+
+    def test_save_interview_notes_new_file(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_interview_notes, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("NotesCo", "Engineer", jd_text="We need an engineer")
+        result = save_interview_notes("NotesCo", "Recruiter called, discussed salary expectations.")
+        assert result["ok"] is True
+        assert result["appended"] is False
+        assert (tmp_path / "NotesCo" / "interview_notes.md").exists()
+        content = (tmp_path / "NotesCo" / "interview_notes.md").read_text()
+        assert "Recruiter called" in content
+
+    def test_save_interview_notes_appends_to_existing(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_interview_notes
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("NotesCo", "Engineer", jd_text="We need an engineer")
+        save_interview_notes("NotesCo", "First round notes.")
+        result = save_interview_notes("NotesCo", "Second round feedback.", section="Round 2")
+        assert result["ok"] is True
+        assert result["appended"] is True
+        content = (tmp_path / "NotesCo" / "interview_notes.md").read_text()
+        assert "First round notes" in content
+        assert "Second round feedback" in content
+        assert "Round 2" in content
+
+    def test_save_interview_notes_records_in_tracker(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_interview_notes, _load_tracker
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("NotesCo", "Engineer", jd_text="We need an engineer")
+        save_interview_notes("NotesCo", "Notes here.")
+        tracker = _load_tracker()
+        app = tracker["applications"][0]
+        assert "interview_notes" in app["outputs"]
+        assert len(app["outputs"]["interview_notes"]) == 1
+
+    def test_status_includes_outputs_and_submitted(self, tmp_path, monkeypatch):
+        from job_applications_mcp_server import ingest_jd, save_research, get_application_status
+        monkeypatch.setattr("job_applications_mcp_server.BASE_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
+        monkeypatch.setattr("job_applications_mcp_server.TRACKER_PATH", tmp_path / "tracker.json")
+        monkeypatch.setattr("job_applications_mcp_server.PROFILE_PATH", tmp_path / "profile.json")
+        ingest_jd("StatCo", "Engineer", jd_text="We need an engineer")
+        save_research("StatCo", "# Research content")
+        result = get_application_status("StatCo")
+        assert "outputs" in result
+        assert "research" in result["outputs"]
+        assert "submitted" in result
+        assert "submitted_files" in result
+        assert result["submitted_files"] == []  # no submitted/ dir yet
