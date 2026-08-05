@@ -33,7 +33,7 @@
 
 - **MCP server** running on pi-4 as `job-applications-mcp.service` (HTTP :8086, bearer auth)
 - **Daily digest** via `job-applications-tracker.timer` (07:00, emails overdue follow-ups)
-- **All 22 MCP tools** functional and tested
+- **All 22 MCP tools** functional and tested (including `ingest_jd` with `jd_text` parameter and `jd_content_too_short` guard)
 - **NAS data storage** at `/mnt/job-app-data` (NFS mount from rv-cloud.local)
 - **Claude Desktop** connects via `mcp-remote` to `gs-pi-4.local:8086/mcp`
 - **Claude Code** connects via HTTP (`.mcp.json` config)
@@ -61,6 +61,14 @@
 **Workaround:** Restart Claude Desktop session. The `npx mcp-remote` proxy may lose its session or have connection issues.
 
 **Status:** Under investigation. The `mcp-remote` npm package may have session handling issues with FastMCP's streamable-http transport.
+
+### JS-rendered job posting URLs
+
+**Issue:** Many job sites (Meta, LinkedIn, Workday) use JavaScript rendering. URL scraping via `ingest_jd` returns only the page title (e.g., "Meta Careers", 12–14 chars) instead of the actual JD content.
+
+**Mitigation:** The `jd_content_too_short` guard (deployed 2026-08-05) rejects URL-fetched content shorter than 50 characters with a clear error suggesting `jd_text` instead. Users can paste the JD content directly using the `jd_text` parameter, optionally keeping `jd_url` as a provenance reference.
+
+**Status:** ✅ Guard deployed. The Meta tracker record (created before the guard) still has near-empty JD content and should be re-ingested with actual JD text.
 
 ### Duplicate Glean tracker entry
 
@@ -115,18 +123,6 @@
 
 6. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
 
-7. **Deploy `ingest_jd` jd_text enhancement** — The new `jd_text` parameter allows pasting JD text directly and optionally recording a reference URL. Needs rsync to pi-4 and service restart.
+7. ~~**Deploy `ingest_jd` jd_text enhancement**~~ — ✅ Deployed (commit `60871ea`, pi-4 restarted 2026-08-05). The `jd_text` parameter and `jd_content_too_short` guard are live.
 
 8. **Fix umask `0177` bug** — Claude Code sessions inherit umask 0177 (should be 0022), breaking mkdir/git/npm. Root cause is Claude Code's process environment, not shell config. Workaround: `umask 0022` at session start.
-
-1. **Task 11: LinkedIn job-alert discovery** — Implement Gmail API OAuth for automated JD ingestion from LinkedIn job-alert emails. Design spec in `.kiro/specs/job-application-agent/tasks.md`.
-
-2. **Fix `DXC/.venv`** — Remove or gitignore the committed venv inside the DXC company folder.
-
-3. **Gitignore company folders** — Decide whether to track company artefact folders in git or explicitly gitignore them (they're currently untracked).
-
-4. **Investigate mcp-remote stability** — Debug the intermittent tool call failures in Claude Desktop.
-
-5. **Remove Glean "Role TBC" stub** — The remaining Glean entry at index 3 has a placeholder role title. Update with actual title or remove if no longer relevant.
-
-6. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
