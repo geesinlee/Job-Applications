@@ -12,8 +12,15 @@ def _isolate_job_app_paths(tmp_path, monkeypatch):
     ARTEFACTS_DIR were silently reading/writing the real project's
     tracker.json and profile.json. Patch all four here so no test can
     leak into real project state.
+
+    If job_applications_mcp_server cannot be imported (e.g. missing
+    optional deps like beautifulsoup4), skip the fixture silently so
+    that unrelated test modules still work.
     """
-    import job_applications_mcp_server as m
+    try:
+        import job_applications_mcp_server as m
+    except ImportError:
+        return
     monkeypatch.setattr(m, "BASE_DIR", tmp_path)
     monkeypatch.setattr(m, "ARTEFACTS_DIR", tmp_path)
     monkeypatch.setattr(m, "TRACKER_PATH", tmp_path / "tracker.json")
