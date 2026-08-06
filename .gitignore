@@ -7,3 +7,16 @@ tracker.json
 tracker.json.bak-*
 profile.json
 tracker_daily.log
+
+# Job digest output files
+digests/
+
+# Gmail OAuth2 credentials
+creds/
+client_secret_*.json
+
+# Gmail account config
+gmail_accounts.json
+
+# Job digest log
+job_digest.log

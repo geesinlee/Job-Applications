@@ -1,0 +1,10 @@
+[Unit]
+Description=Job Applications Daily Job Digest Run
+After=network.target nfs-client.target
+RequiresMountsFor=/mnt/job-app-data
+
+[Service]
+WorkingDirectory=/home/gs/Projects/Job-Applications
+ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python \
+          job_digest.py
+EnvironmentFile=/home/gs/Projects/Job-Applications/.env
