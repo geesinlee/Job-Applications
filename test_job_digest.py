@@ -113,14 +113,41 @@ class TestDeduplicateJobs:
         urls_already = [j.url for j in already]
         assert "https://linkedin.com/jobs/view/999999" in urls_already
 
-    def test_fuzzy_title_match_is_tracked(self, sample_jobs, sample_tracker):
-        """Jobs with fuzzy company+title match are already tracked."""
+    def test_exact_company_fuzzy_title_match_is_tracked(self, sample_jobs, sample_tracker):
+        """Jobs with exact company + fuzzy title match are already tracked."""
         result = deduplicate_jobs(sample_jobs, sample_tracker)
         already = result["already_tracked"]
-        # "Client Partner, Public Sector" at "DXC Technology" should fuzzy-match
-        # "DXC Technology" in tracker (exact match on company, Levenshtein on title)
+        # "Client Partner, Public Sector" at "DXC Technology" should match
+        # "DXC Technology" in tracker (exact company, Levenshtein on title)
         dxc_already = [j for j in already if j.company == "DXC Technology"]
         assert len(dxc_already) >= 1
+
+    def test_fuzzy_company_does_not_match(self):
+        """Fuzzy company matching is NOT used — only exact company match."""
+        tracker = {
+            "schema_version": "1.0",
+            "applications": [
+                {
+                    "id": "zzz-999",
+                    "company": "Databricks",
+                    "role_title": "Account Executive",
+                    "stage": "applied",
+                },
+            ],
+        }
+        # Company "Databrick" (missing 's') should NOT match "Databricks" — exact only
+        job = JobCard(
+            title="Account Executive",
+            company="Databrick",
+            location="Singapore",
+            url="https://example.com/diff-company",
+            snippet="Sell stuff",
+            source_email_id="m-diff",
+            source_date="2026-08-05",
+        )
+        result = deduplicate_jobs([job], tracker)
+        assert len(result["already_tracked"]) == 0
+        assert len(result["new"]) == 1
 
     def test_new_job_not_tracked(self, sample_jobs, sample_tracker):
         """Jobs not in tracker appear in 'new'."""
@@ -588,12 +615,91 @@ class TestFormatDigestEmail:
                 source_email_id="m1",
                 source_date="2026-08-05",
             ),
+            JobCard(
+                title="VP of Sales",
+                company="BigTech Inc",
+                location="Singapore",
+                url="https://example.com/2",
+                snippet="Lead sales",
+                source_email_id="m2",
+                source_date="2026-08-05",
+            ),
         ]
-        stats = {"processed": 5, "surfaced": 1, "below_threshold": 2, "already_tracked": 2}
+        stats = {"processed": 5, "surfaced": 2, "below_threshold": 2, "already_tracked": 1}
 
         subject, body = _format_digest_email(surfaced, stats, "2026-08-05")
+        # Subject: "Job Discoveries — YYYY-MM-DD: N new roles"
+        assert "Job Discoveries" in subject
         assert "2026-08-05" in subject
-        assert "1 surfaced" in subject
-        assert "Acme Corp" in body
-        assert "Senior Director" in body
-        assert "Processed: 5" in body
+        assert "2 new roles" in subject
+        # Body: header, Top Matches with numbered list, Stats line, review prompt
+        assert "Job Discoveries for 2026-08-05" in body
+        assert "🔥 Top Matches:" in body
+        assert "1. Acme Corp — Senior Director" in body
+        assert "2. BigTech Inc — VP of Sales" in body
+        assert "📊 Stats:" in body
+        assert "5 processed" in body
+        assert "2 surfaced" in body
+        assert "2 below threshold" in body
+        assert "1 already tracked" in body
+        assert 'review_daily_discoveries("2026-08-05")' in body
+
+    def test_email_format_no_surfaced(self):
+        from job_digest import _format_digest_email
+
+        stats = {"processed": 0, "surfaced": 0, "below_threshold": 0, "already_tracked": 0}
+        subject, body = _format_digest_email([], stats, "2026-08-05")
+        assert "0 new roles" in subject
+        assert "(none)" in body
+
+
+# ---------------------------------------------------------------------------
+# TestDryRun
+# ---------------------------------------------------------------------------
+
+class TestDryRun:
+    """Tests for the --dry-run flag."""
+
+    def test_dry_run_exits_early(self):
+        """--dry-run authenticates but does not write/send/trash."""
+        from job_digest import main
+
+        with patch("job_digest.GMAIL_ACCOUNTS_CONFIG", "test-config"), \
+             patch("job_digest.GmailAccountManager") as MockMgr, \
+             patch("job_digest.query_linkedin_emails") as mock_query:
+            mock_mgr = MockMgr.return_value
+            mock_mgr.accounts = ["test@gmail.com"]
+            mock_mgr.get_access_token.return_value = "fake-token"
+            mock_query.return_value = [{"id": "m1", "date": "2026-08-05", "html": "<html></html>"}]
+
+            with patch("sys.argv", ["job_digest.py", "--dry-run"]), \
+                 patch("builtins.print") as mock_print:
+                # Need to also patch env var and module-level constants
+                with patch("job_digest._read_last_run", return_value="2026-08-04"):
+                    result = main()
+
+            assert result == 0
+            # dry-run should print stats and exit 0 without writing/sending/trashing
+            assert mock_print.called
+
+    def test_dry_run_does_not_write_digest(self, tmp_path):
+        """--dry-run should not create any digest files."""
+        from job_digest import main
+
+        with patch("job_digest.GMAIL_ACCOUNTS_CONFIG", "test-config"), \
+             patch("job_digest.GmailAccountManager") as MockMgr, \
+             patch("job_digest.query_linkedin_emails") as mock_query, \
+             patch("job_digest.DIGEST_DIR", tmp_path / "digests"), \
+             patch("job_digest.LAST_RUN_FILE", tmp_path / ".last_run"):
+            mock_mgr = MockMgr.return_value
+            mock_mgr.accounts = ["test@gmail.com"]
+            mock_mgr.get_access_token.return_value = "fake-token"
+            mock_query.return_value = [{"id": "m1", "date": "2026-08-05", "html": "<html></html>"}]
+
+            with patch("sys.argv", ["job_digest.py", "--dry-run"]), \
+                 patch("job_digest._read_last_run", return_value="2026-08-04"):
+                result = main()
+
+            assert result == 0
+            # No digest directory or files should be created
+            assert not (tmp_path / "digests").exists()

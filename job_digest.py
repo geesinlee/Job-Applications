@@ -18,6 +18,7 @@ Pipeline:
 
 from __future__ import annotations
 
+import argparse
 import base64
 import json
 import logging
@@ -25,7 +26,7 @@ import os
 import re
 import smtplib
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 
@@ -51,7 +52,7 @@ ARTEFACTS_DIR = Path(os.environ.get("JOB_APP_ARTEFACTS_DIR", str(BASE_DIR)))
 TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
 REFERENCE_CV_PATH = Path(os.environ.get(
-    "JOB_APP_PROFILE_PATH",
+    "JOB_APP_REFERENCE_CV_PATH",
     str(ARTEFACTS_DIR / "Base CV" / "Reference_CV.md"),
 ))
 
@@ -65,7 +66,7 @@ LOG_PATH = Path(os.environ.get("JOB_DIGEST_LOG_PATH", str(_SRC_DIR / "job_digest
 
 GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 
-# Levenshtein distance threshold for fuzzy company+title matching
+# Levenshtein distance threshold for fuzzy title matching (company is exact match)
 LEV_THRESHOLD = 3
 
 # Pre-filter senior-title keywords (case-insensitive)
@@ -147,8 +148,8 @@ def deduplicate_jobs(jobs: list[JobCard], tracker: dict) -> dict:
     A job is "already tracked" if:
       - Its URL exactly matches a tracker record's jd_source_url, or
       - Its URL exactly matches any URL found in the tracker applications, or
-      - Its company+title is within Levenshtein distance <= LEV_THRESHOLD
-        of a tracker record's company+role_title (both case-insensitive).
+      - Its company exactly matches (case-insensitive) AND its title is within
+        Levenshtein distance <= LEV_THRESHOLD of a tracker record's role_title.
     """
     tracked_urls: set[str] = set()
     tracked_combos: list[tuple[str, str]] = []  # (company_lower, title_lower)
@@ -187,8 +188,7 @@ def deduplicate_jobs(jobs: list[JobCard], tracker: dict) -> dict:
         job_title = job.title.lower().strip()
         is_dup = False
         for tc, tt in tracked_combos:
-            if _levenshtein(job_company, tc) <= LEV_THRESHOLD and \
-               _levenshtein(job_title, tt) <= LEV_THRESHOLD:
+            if job_company == tc and _levenshtein(job_title, tt) <= LEV_THRESHOLD:
                 is_dup = True
                 break
         if is_dup:
@@ -480,7 +480,7 @@ def query_linkedin_emails(
     headers = {"Authorization": f"Bearer {token}"}
 
     # Search for LinkedIn job alert emails
-    query = f"from:linkedin.com subject:job after:{after_date}"
+    query = f"from:notifications@linkedin.com after:{after_date}"
     list_url = f"{GMAIL_API_BASE}/messages?q={requests.utils.quote(query)}&maxResults=50"
 
     try:
@@ -557,23 +557,26 @@ def trash_emails(
 def _format_digest_email(surfaced: list[JobCard], stats: dict, date_str: str) -> tuple[str, str]:
     """Format email subject and body for the digest notification."""
     surfaced_count = len(surfaced)
-    subject = f"Job Digest — {date_str} | {surfaced_count} surfaced, {stats.get('already_tracked', 0)} tracked"
+    subject = f"Job Discoveries — {date_str}: {surfaced_count} new roles"
 
-    lines = [f"LinkedIn Job Digest — {date_str}", ""]
+    lines = [f"Job Discoveries for {date_str}", ""]
 
-    lines.append(f"SURFACED FOR REVIEW ({surfaced_count})")
+    lines.append("🔥 Top Matches:")
     if surfaced:
-        for job in surfaced:
-            lines.append(f"  - {job.company}: {job.title} ({job.location or 'N/A'})")
+        for i, job in enumerate(surfaced, 1):
+            lines.append(f"{i}. {job.company} — {job.title}")
     else:
-        lines.append("  (none)")
+        lines.append("(none)")
     lines.append("")
 
-    lines.append(f"STATS")
-    lines.append(f"  Processed: {stats.get('processed', 0)}")
-    lines.append(f"  Surfaced: {surfaced_count}")
-    lines.append(f"  Below threshold: {stats.get('below_threshold', 0)}")
-    lines.append(f"  Already tracked: {stats.get('already_tracked', 0)}")
+    lines.append(
+        f"📊 Stats: {stats.get('processed', 0)} processed, "
+        f"{surfaced_count} surfaced, "
+        f"{stats.get('below_threshold', 0)} below threshold, "
+        f"{stats.get('already_tracked', 0)} already tracked"
+    )
+    lines.append("")
+    lines.append(f'Review in Claude Desktop: review_daily_discoveries("{date_str}")')
 
     return subject, "\n".join(lines)
 
@@ -651,8 +654,13 @@ def _write_last_run(date_str: str) -> None:
 
 def main() -> int:
     """Run the daily job discovery digest pipeline."""
+    parser = argparse.ArgumentParser(description="Daily LinkedIn job discovery digest")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Authenticate and query Gmail but do not write digest, send email, or trash emails")
+    args = parser.parse_args()
+
     today = date.today().isoformat()
-    _log(f"=== Job digest starting for {today} ===")
+    _log(f"=== Job digest starting for {today} {'(DRY RUN)' if args.dry_run else ''} ===")
 
     # 1. Authenticate with Gmail API
     if not GMAIL_ACCOUNTS_CONFIG:
@@ -687,17 +695,20 @@ def main() -> int:
 
     # 2. Determine query window
     last_run = _read_last_run()
-    after_date = last_run or date(year=today.year_int if hasattr(today, 'year_int') else today.year,
-                                    month=today.month, day=1).isoformat()
-    # Simpler: use last_run or beginning of current month
-    if not last_run:
-        from datetime import timedelta
+    if last_run:
+        after_date = last_run
+    else:
         after_date = (date.today() - timedelta(days=30)).isoformat()
     _log(f"Querying LinkedIn emails after {after_date}")
 
     # 3. Query Gmail for LinkedIn job-alert emails
     emails = query_linkedin_emails(mgr, account, after_date)
     _log(f"Found {len(emails)} LinkedIn emails")
+
+    if args.dry_run:
+        print(f"DRY RUN: Gmail API access OK. Found {len(emails)} emails since {after_date}.")
+        print("No digest written, no email sent, no emails trashed.")
+        return 0
 
     if not emails:
         # No emails found: write empty digest, no email, no trash
