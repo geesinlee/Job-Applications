@@ -87,13 +87,14 @@ class GmailAccountManager:
         except (json.JSONDecodeError, OSError):
             return None
 
-    def get_access_token(self, account: str) -> str:
+    def get_access_token(self, account: str) -> str | None:
         """Return a valid access token, refreshing if needed.
 
-        Raises ValueError if the account is not configured.
+        Returns None if the account is not configured or token refresh fails.
         """
         if account not in self.accounts:
-            raise ValueError(f"Unknown account: {account}")
+            logger.warning("Unknown account: %s", account)
+            return None
 
         cached = self._tokens.get(account)
         if cached and cached["expires_at"] > time.time():
@@ -115,13 +116,18 @@ class GmailAccountManager:
             token_data = resp.json()
         except requests.RequestException as e:
             logger.error("Token refresh failed for '%s': %s", account, e)
-            raise
+            return None
+
+        access_token = token_data.get("access_token")
+        if not access_token:
+            logger.error("Token response missing access_token for account '%s'", account)
+            return None
 
         self._tokens[account] = {
-            "token": token_data["access_token"],
+            "token": access_token,
             "expires_at": time.time() + token_data.get("expires_in", 3600) - 60,
         }
-        return token_data["access_token"]
+        return access_token
 
     def category_for(self, account: str) -> str:
         """Return the category for an account, defaulting to 'personal'."""

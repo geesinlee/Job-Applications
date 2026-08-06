@@ -173,13 +173,68 @@ class TestGmailAccountManager:
         assert token2 == "at_cached"
         assert call_count == 1  # Only one POST; second call hit cache
 
-    def test_get_access_token_missing_account_raises(self, tmp_path):
-        """Requesting a token for an unknown account raises ValueError."""
+    def test_get_access_token_missing_account_returns_none(self, tmp_path):
+        """Requesting a token for an unknown account returns None."""
         config_path = self._write_config(tmp_path, {})
         mgr = GmailAccountManager(config_path)
 
-        with pytest.raises(ValueError, match="unknown_acct"):
-            mgr.get_access_token("unknown_acct")
+        result = mgr.get_access_token("unknown_acct")
+        assert result is None
+
+    def test_get_access_token_network_error_returns_none(self, tmp_path, monkeypatch):
+        """Network failure during token refresh returns None."""
+        import requests
+
+        cred_files = {
+            "personal_acct": {
+                "client_id": "cid1",
+                "client_secret": "csec1",
+                "refresh_token": "rtok1",
+            }
+        }
+        accounts = {
+            "personal_acct": {
+                "email": "alice@gmail.com",
+                "category": "personal",
+            }
+        }
+        config_path = self._write_config(tmp_path, accounts, cred_files)
+        mgr = GmailAccountManager(config_path)
+
+        def mock_post_raises(*a, **kw):
+            raise requests.RequestException("connection error")
+
+        monkeypatch.setattr("gmail_auth.requests.post", mock_post_raises)
+
+        result = mgr.get_access_token("personal_acct")
+        assert result is None
+
+    def test_get_access_token_missing_access_token_in_response_returns_none(self, tmp_path, monkeypatch):
+        """Token response without access_token returns None."""
+        cred_files = {
+            "personal_acct": {
+                "client_id": "cid1",
+                "client_secret": "csec1",
+                "refresh_token": "rtok1",
+            }
+        }
+        accounts = {
+            "personal_acct": {
+                "email": "alice@gmail.com",
+                "category": "personal",
+            }
+        }
+        config_path = self._write_config(tmp_path, accounts, cred_files)
+        mgr = GmailAccountManager(config_path)
+
+        mock_response = Mock()
+        mock_response.json.return_value = {"expires_in": 3600}  # no access_token
+        mock_response.raise_for_status = Mock()
+
+        monkeypatch.setattr("gmail_auth.requests.post", lambda *a, **kw: mock_response)
+
+        result = mgr.get_access_token("personal_acct")
+        assert result is None
 
     def test_missing_config_file_logs_warning(self, tmp_path, caplog):
         """A missing config file logs a warning and creates an empty manager."""
