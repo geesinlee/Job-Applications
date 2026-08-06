@@ -2909,5 +2909,193 @@ def export_document(company: str, document_type: str, format: str, role_title: s
     }
 
 
+# ---------------------------------------------------------------------------
+# Daily Discovery tools (LinkedIn job digest integration)
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def review_daily_discoveries(date: str = "") -> dict:
+    """Review daily job discoveries from the LinkedIn email digest.
+
+    Returns the day's curated job cards surfaced by the 2am digest job.
+    Use this each morning to see new job opportunities, then use
+    score_match on individual jobs, and ingest_from_discovery to add
+    them to the tracker.
+
+    Args:
+        date: ISO date string (e.g., "2026-08-06"). Defaults to today.
+    """
+    from datetime import date as _date
+
+    if not date:
+        date = _date.today().isoformat()
+
+    digest_dir = ARTEFACTS_DIR / "digests"
+    digest_path = digest_dir / f"{date}.md"
+
+    if not digest_path.exists():
+        return {"ok": False, "error": "no_digest_found", "date": date,
+                "hint": f"No digest file found for {date}. The job digest script may not have run yet."}
+
+    content = digest_path.read_text(encoding="utf-8")
+
+    # Parse the markdown into structured data
+    jobs = []
+    current_job = None
+    in_below_threshold = False
+
+    for line in content.split("\n"):
+        # Section boundary: "## Below Threshold" marks the start of the
+        # below-threshold section — stop collecting surfaced jobs.
+        if line.strip().startswith("## Below Threshold"):
+            in_below_threshold = True
+            current_job = None
+            continue
+        # New section header resets below-threshold flag
+        if line.strip().startswith("## ") and not line.strip().startswith("## Below"):
+            in_below_threshold = False
+            current_job = None
+
+        if line.startswith("### "):
+            header = line.lstrip("# ").strip()
+            if " — " in header:
+                company, title = header.split(" — ", 1)
+            else:
+                company, title = "", header
+            category = "below_threshold" if in_below_threshold else "surfaced"
+            current_job = {"company": company.strip(), "title": title.strip(), "category": category}
+            jobs.append(current_job)
+        elif current_job is not None:
+            line = line.strip()
+            if line.startswith("- **Location:**"):
+                current_job["location"] = line.replace("- **Location:**", "").strip()
+            elif line.startswith("- **URL:**"):
+                current_job["url"] = line.replace("- **URL:**", "").strip()
+            elif line.startswith("- **Snippet:**"):
+                current_job["snippet"] = line.replace("- **Snippet:**", "").strip()
+            elif line.startswith("- **Category:**"):
+                current_job["category"] = line.replace("- **Category:**", "").strip()
+            elif line.startswith("- **Reason:**"):
+                current_job["reason"] = line.replace("- **Reason:**", "").strip()
+
+    surfaced = [j for j in jobs if j.get("category") != "below_threshold"]
+    below_threshold = [j for j in jobs if j.get("category") == "below_threshold"]
+
+    return {
+        "ok": True,
+        "date": date,
+        "surfaced": surfaced,
+        "below_threshold": below_threshold,
+        "total_surfaced": len(surfaced),
+        "total_below_threshold": len(below_threshold),
+        "hint": "Use score_match on individual jobs for full LLM-based matching, then ingest_from_discovery to add to tracker.",
+    }
+
+
+@mcp.tool()
+def ingest_from_discovery(company: str, date: str) -> dict:
+    """Ingest a discovered job from the daily digest into the tracker.
+
+    Finds the job in the digest file for the given date, creates a tracker
+    entry (stage=new), and writes JD.md to the company folder.
+
+    Args:
+        company: Company name (must match a job in the digest for that date).
+        date: ISO date string matching the digest file (e.g., "2026-08-06").
+    """
+    digest_dir = ARTEFACTS_DIR / "digests"
+    digest_path = digest_dir / f"{date}.md"
+
+    if not digest_path.exists():
+        return {"ok": False, "error": "no_digest_found", "date": date}
+
+    content = digest_path.read_text(encoding="utf-8")
+
+    # Parse to find the matching job
+    current_job = None
+    jobs = []
+    for line in content.split("\n"):
+        if line.startswith("### "):
+            header = line.lstrip("# ").strip()
+            if " — " in header:
+                comp, title = header.split(" — ", 1)
+            else:
+                comp, title = "", header
+            current_job = {"company": comp.strip(), "title": title.strip()}
+            jobs.append(current_job)
+        elif current_job is not None:
+            line = line.strip()
+            if line.startswith("- **Location:**"):
+                current_job["location"] = line.replace("- **Location:**", "").strip()
+            elif line.startswith("- **URL:**"):
+                current_job["url"] = line.replace("- **URL:**", "").strip()
+            elif line.startswith("- **Snippet:**"):
+                current_job["snippet"] = line.replace("- **Snippet:**", "").strip()
+
+    # Find matching job (case-insensitive company match)
+    company_lower = company.lower()
+    match = None
+    for job in jobs:
+        if job["company"].lower() == company_lower:
+            match = job
+            break
+
+    if not match:
+        available = [j["company"] for j in jobs]
+        return {"ok": False, "error": "job_not_found", "company": company,
+                "available_companies": available}
+
+    # Check if already in tracker
+    tracker = _load_tracker()
+    for app in tracker.get("applications", []):
+        if app.get("company", "").lower() == company_lower:
+            return {"ok": False, "error": "already_tracked", "company": company,
+                    "existing_id": app.get("id"), "existing_stage": app.get("stage")}
+
+    # Create company folder and JD.md
+    try:
+        company_dir = _resolve_company_folder(match["company"], match["title"], tracker)
+    except AmbiguousRoleError as e:
+        return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
+    company_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build JD content from digest data
+    jd_lines = [
+        f"# {match['title']}",
+        "",
+        f"**Company:** {match['company']}",
+        f"**Location:** {match.get('location', 'Not specified')}",
+        f"**Source:** LinkedIn job discovery ({date})",
+    ]
+    if match.get("url"):
+        jd_lines.append(f"**URL:** {match['url']}")
+    jd_lines.append("")
+    jd_lines.append(match.get("snippet", "No description available."))
+    jd_lines.append("")
+    jd_content = "\n".join(jd_lines)
+
+    jd_path = company_dir / "JD.md"
+    jd_path.write_text(jd_content, encoding="utf-8")
+
+    # Create tracker entry using existing patterns
+    now = _utc_now()
+    new_app = _create_application_record(match["company"], match["title"], str(jd_path))
+    if match.get("url"):
+        new_app["jd_source_url"] = match["url"]
+    tracker["applications"].append(new_app)
+    _save_tracker(tracker)
+
+    return {
+        "ok": True,
+        "application_id": new_app["id"],
+        "company": match["company"],
+        "role_title": match["title"],
+        "stage": "new",
+        "folder_path": str(company_dir),
+        "jd_path": str(jd_path),
+        "hint": "Use score_match for full LLM-based matching, then save_match_score to record results.",
+    }
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http" if MCP_MODE == "http" else "stdio")

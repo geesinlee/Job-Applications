@@ -137,6 +137,10 @@ At the end of substantial development work:
 - Keep these documents consistent with the actual codebase.
 - Never record assumptions as established facts.
 
+## MCP Client Preference
+
+**Standard practice is to use Claude Desktop to interface with MCP servers**, not the CLI. Claude Desktop provides a richer interaction surface and is the primary client for all MCP tool calls. The CLI (`claude`) is for development and debugging only.
+
 ## Things Agents Should NOT Do
 
 - **Do not** commit `.env`, `tracker.json`, `profile.json`, or `tracker_daily.log` — they are gitignored runtime data.
