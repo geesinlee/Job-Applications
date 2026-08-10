@@ -479,8 +479,10 @@ def query_linkedin_emails(
 
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Search for LinkedIn job alert emails
-    query = f"from:notifications@linkedin.com after:{after_date}"
+    # Search for LinkedIn job alert emails (two sender addresses):
+    #   jobalerts-noreply = digest-format daily/weekly alerts
+    #   jobs-noreply = individual job recommendations
+    query = f"(from:jobalerts-noreply@linkedin.com OR from:jobs-noreply@linkedin.com) after:{after_date}"
     list_url = f"{GMAIL_API_BASE}/messages?q={requests.utils.quote(query)}&maxResults=50"
 
     try:
@@ -720,7 +722,8 @@ def main() -> int:
 
     # 4. Parse job listings from each email
     all_jobs: list[JobCard] = []
-    email_ids: list[str] = []
+    email_ids: list[str] = []  # only IDs of emails that produced jobs
+    skipped_ids: list[str] = []  # emails that didn't yield any jobs
     for email_info in emails:
         try:
             jobs = parse_linkedin_email(
@@ -728,8 +731,12 @@ def main() -> int:
                 source_email_id=email_info["id"],
                 source_date=email_info.get("date", today),
             )
-            all_jobs.extend(jobs)
-            email_ids.append(email_info["id"])
+            if jobs:
+                all_jobs.extend(jobs)
+                email_ids.append(email_info["id"])
+            else:
+                skipped_ids.append(email_info["id"])
+                _log(f"INFO: Email {email_info['id']} yielded 0 jobs (kept in inbox)")
         except Exception as e:
             _log(f"WARNING: Failed to parse email {email_info.get('id', '?')}: {e}")
             continue

@@ -3,6 +3,12 @@
 Extracts structured job cards from LinkedIn job-alert email HTML.
 Supports both digest ("X jobs matching your search") and single-job
 ("New job for you" / "Recommended job") email formats.
+
+LinkedIn email formats (as of 2026):
+- Digest format: multiple job cards, each with title link, company+location
+  in a <p> element separated by '·', and an "Apply" or "View job" link.
+- Single-job format: one job card with similar structure.
+- Link patterns: /comm/jobs/view/{id} (email redirect prefix) or /jobs/view/{id}
 """
 
 from __future__ import annotations
@@ -20,14 +26,18 @@ logger = logging.getLogger(__name__)
 _MAX_SNIPPET = 200
 
 # Regex for LinkedIn job URLs
-_JOB_VIEW_RE = re.compile(r"linkedin\.com/jobs/view/\d+", re.IGNORECASE)
-_JOB_SEARCH_RE = re.compile(r"linkedin\.com/jobs/search/", re.IGNORECASE)
+# Note: LinkedIn email links use /comm/ prefix (e.g., linkedin.com/comm/jobs/view/123)
+_JOB_VIEW_RE = re.compile(r"linkedin\.com/(?:comm/)?jobs/view/\d+", re.IGNORECASE)
+_JOB_SEARCH_RE = re.compile(r"linkedin\.com/(?:comm/)?jobs/search/", re.IGNORECASE)
 
 # Known location keywords to detect from free text
 _LOCATION_KEYWORDS_RE = re.compile(
     r"\b(Singapore|Remote|Hybrid|APAC|ASEAN|Asia.?Pacific|United States|USA|UK|Europe|EMEA)\b",
     re.IGNORECASE,
 )
+
+# Pattern to split "Company · Location" text
+_COMPANY_LOCATION_SPLIT = re.compile(r"\s*·\s*")
 
 
 @dataclass
@@ -76,105 +86,123 @@ def _find_job_links(soup: BeautifulSoup) -> list[Tag]:
     return links
 
 
-def _find_card_container(tag: Tag) -> Tag:
-    """Walk up from a link to find the nearest meaningful card container.
+def _parse_company_location(text: str) -> tuple[str, str | None]:
+    """Parse 'Company · Location' or 'Company · Location (Remote)' text.
 
-    A card container is a parent element that has substantially more text
-    content than just the link title — it likely holds company, location,
-    and snippet fields too.
+    Returns (company, location) tuple. If no '·' separator is found,
+    returns (text, None).
     """
-    current = tag.parent
+    parts = _COMPANY_LOCATION_SPLIT.split(text.strip(), maxsplit=1)
+    if len(parts) == 2:
+        return parts[0].strip(), parts[1].strip()
+    return text.strip(), None
+
+
+def _extract_card_from_link(link: Tag) -> Tag:
+    """Walk up from a link to find the nearest card container.
+
+    LinkedIn 2026 email cards have job titles in <td> elements with the
+    company+location in sibling <p> elements. We walk up until we find
+    a container with substantial text content.
+    """
+    current = link.parent
     while current is not None:
         if isinstance(current, Tag):
-            link_text = tag.get_text(strip=True)
+            link_text = link.get_text(strip=True)
             container_text = current.get_text(strip=True)
-            # The container should have more text than just the link title
-            # (company + location + snippet add meaningful length)
             if len(container_text) > len(link_text) * 2:
                 return current
         current = current.parent if hasattr(current, "parent") else None
-    # Fallback: return the link's immediate parent
-    return tag.parent if tag.parent else tag
+    return link.parent if link.parent else link
 
 
-def _extract_company(card: Tag) -> str:
-    """Extract company name from a card container."""
-    # Try <span class="company"> first
+def _extract_company_from_card(card: Tag, title: str) -> str:
+    """Extract company name from a card container.
+
+    LinkedIn email formats vary:
+    - 2026 digest format: <p class="text-system-gray-100 text-xs ..."> containing "Company · Location"
+    - Older format: <span class="company">Company</span>
+    """
+    # Method 1: Explicit <span class="company"> element (older format)
     company_span = card.find("span", class_="company")
     if company_span:
         return company_span.get_text(strip=True)
 
-    # Fallback: look for text that looks like a company name on the next line
-    # after the title link. Only consider <span> or <div> elements (not <p>,
-    # which is the snippet). Skip <span class="location">.
-    def _is_company_candidate(tag: Tag) -> bool:
-        """Return True if the tag could hold a company name (not snippet/location)."""
-        if tag.name == "p":
-            return False  # <p> is snippet territory
-        classes = tag.get("class", [])
-        if isinstance(classes, str):
-            classes = [classes]
-        if "location" in classes:
-            return False
-        return True
+    # Method 2: <p> elements with · separator (2026 digest format)
+    for p in card.find_all("p"):
+        p_text = p.get_text(strip=True)
+        if "·" in p_text and len(p_text) < 200:
+            company, _ = _parse_company_location(p_text)
+            if company and company != title:
+                return company
 
+    # Method 3: Check sibling elements after the title link
     links = card.find_all("a", href=True)
-    for link in links:
-        if _JOB_VIEW_RE.search(link["href"]) or _JOB_SEARCH_RE.search(link["href"]):
-            # Check next sibling elements
-            for sibling in link.next_siblings:
-                if isinstance(sibling, Tag) and _is_company_candidate(sibling):
+    for link_tag in links:
+        if _JOB_VIEW_RE.search(link_tag["href"]) or _JOB_SEARCH_RE.search(link_tag["href"]):
+            for sibling in link_tag.next_siblings:
+                if isinstance(sibling, Tag):
                     text = sibling.get_text(strip=True)
-                    if text and not _LOCATION_KEYWORDS_RE.search(text):
-                        return text
-            # Also check parent's direct children after the link
-            parent = link.parent
-            if parent and isinstance(parent, Tag):
-                found_link = False
-                for child in parent.children:
-                    if child is link:
-                        found_link = True
-                        continue
-                    if found_link and isinstance(child, Tag) and _is_company_candidate(child):
-                        text = child.get_text(strip=True)
-                        if text and not _LOCATION_KEYWORDS_RE.search(text):
-                            return text
+                    if text and "·" in text:
+                        company, _ = _parse_company_location(text)
+                        if company:
+                            return company
 
     return "Unknown"
 
 
-def _extract_location(card: Tag) -> str | None:
-    """Extract location from a card container."""
-    # Try <span class="location"> first
+def _extract_location_from_card(card: Tag) -> str | None:
+    """Extract location from a card container.
+
+    Supports both:
+    - <span class="location"> element (older format)
+    - <p> with "Company · Location" pattern (2026 format)
+    """
+    # Method 0: Explicit <span class="location"> element (older format)
     location_span = card.find("span", class_="location")
     if location_span:
         return location_span.get_text(strip=True)
 
-    # Fallback: search for known location keywords in text nodes
-    text = card.get_text(separator=" ", strip=True)
-    match = _LOCATION_KEYWORDS_RE.search(text)
-    if match:
-        # Return the broader match context (e.g., "Remote, APAC" not just "Remote")
-        # Find the containing phrase — look for text node containing the keyword
-        for span in card.find_all(["span", "div", "p"]):
-            span_text = span.get_text(strip=True)
-            if _LOCATION_KEYWORDS_RE.search(span_text):
-                return span_text
+    # Method 1: <p> elements with · separator (2026 format)
+    for p in card.find_all("p"):
+        p_text = p.get_text(strip=True)
+        if "·" in p_text:
+            _, location = _parse_company_location(p_text)
+            if location and _LOCATION_KEYWORDS_RE.search(location):
+                return location
+
+    # Method 2: Search for known location keywords in any text
+    for tag in card.find_all(["span", "p", "div", "td"]):
+        text = tag.get_text(strip=True)
+        if _LOCATION_KEYWORDS_RE.search(text) and len(text) < 200:
+            if "·" in text:
+                _, location = _parse_company_location(text)
+                if location:
+                    return location
+            return text
 
     return None
 
 
-def _extract_snippet(card: Tag) -> str:
-    """Extract snippet from a card container."""
-    # Try <p class="snippet"> first
+def _extract_snippet_from_card(card: Tag, title: str) -> str:
+    """Extract snippet from a card container.
+
+    Supports both:
+    - <p class="snippet"> element (older format)
+    - Any substantial <p> that isn't the title or company·location line
+    """
+    # Method 0: Explicit <p class="snippet"> element (older format)
     snippet_p = card.find("p", class_="snippet")
     if snippet_p:
         return _truncate_snippet(snippet_p.get_text(strip=True))
 
-    # Fallback: look for any <p> tag in the card
+    # Method 1: Look for longer text blocks that aren't the title
     for p in card.find_all("p"):
         text = p.get_text(strip=True)
-        if text:
+        if text and text != title and len(text) > 20:
+            # Skip company · location lines
+            if "·" in text and len(text) < 100:
+                continue
             return _truncate_snippet(text)
 
     return ""
@@ -208,43 +236,101 @@ def parse_linkedin_email(
     if not links:
         return []
 
-    cards: list[JobCard] = []
+    # Group links by job ID to deduplicate (LinkedIn emails have multiple
+    # links per job: image link, title link, CTA link)
+    seen_job_ids: dict[str, JobCard] = {}
+
     for link in links:
         try:
             url = link["href"]
             title = link.get_text(strip=True)
 
+            # Skip empty-title links (image/icon links)
             if not title:
-                logger.debug(
-                    "Skipping link with empty title in email %s", source_email_id
-                )
                 continue
 
-            # Deduplicate by URL
-            if any(c.url == url for c in cards):
+            # Deduplicate by job ID
+            job_id = _extract_job_id(url)
+            if job_id and job_id in seen_job_ids:
+                # Prefer the entry with the shorter (cleaner) title.
+                # LinkedIn emails have multiple links per job:
+                # - Short title only: "Strategic Account Executive"
+                # - Long title+company+location: "Strategic Account ExecutiveMicrosoft · Singapore"
+                # The short one is cleaner for display.
+                existing = seen_job_ids[job_id]
+                if len(title) < len(existing.title) and title:
+                    # Replace with cleaner (shorter) title, but keep existing company/location
+                    existing.title = title
                 continue
 
-            container = _find_card_container(link)
-            company = _extract_company(container)
-            location = _extract_location(container)
-            snippet = _extract_snippet(container)
+            # Find the card container for this link
+            card = _extract_card_from_link(link)
 
-            # If snippet is the same as title text (no dedicated snippet element),
-            # clear it — we only want description text, not the repeated title
-            if snippet == title:
-                snippet = ""
+            # Extract fields from the card
+            company = _extract_company_from_card(card, title)
+            location = _extract_location_from_card(card)
+            snippet = _extract_snippet_from_card(card, title)
 
-            cards.append(
-                JobCard(
-                    title=title,
-                    company=company,
-                    location=location,
-                    url=url,
-                    snippet=snippet,
-                    source_email_id=source_email_id,
-                    source_date=source_date,
-                )
+            # If title contains "Company · Location" pattern, parse it out
+            # LinkedIn format: "TitleCompany · Location" (no space between title and company)
+            # OR: title is just the role, and company+location is in a sibling <p>
+            if "·" in title and company == "Unknown":
+                # Try to split the title itself
+                # Find the last · and check if the right side looks like a location
+                parts = _COMPANY_LOCATION_SPLIT.split(title, maxsplit=1)
+                if len(parts) == 2:
+                    right = parts[1].strip()
+                    if _LOCATION_KEYWORDS_RE.search(right):
+                        # The left side might be "TitleCompany" concatenated
+                        # Look for company in the card's <p> elements instead
+                        pass
+
+            # Clean up title - remove trailing company+location if concatenated
+            # LinkedIn format: "TitleCompany · LocationStatus" where Company · Location
+            # comes from a sibling <p>, and Status is "Actively recruiting", "23 connections", etc.
+            clean_title = title
+            if company and company != "Unknown" and company in clean_title:
+                # Remove "Company" suffix from title
+                # e.g., "Strategic Account ExecutiveMicrosoft" → "Strategic Account Executive"
+                idx = clean_title.find(company)
+                if idx > 0:
+                    clean_title = clean_title[:idx].strip()
+            elif "·" in clean_title:
+                # Split at the first · and keep only the left part as title
+                # e.g., "Client Partner - AI Solutions (Remote)Quik Hire Staffing · Singapore"
+                # → "Client Partner - AI Solutions (Remote)Quik Hire Staffing"
+                # But we also need to extract company from this
+                parts = _COMPANY_LOCATION_SPLIT.split(clean_title, maxsplit=1)
+                left = parts[0].strip()
+                right = parts[1].strip() if len(parts) > 1 else ""
+
+                # The right side has "LocationStatus" — try to extract location
+                if right and _LOCATION_KEYWORDS_RE.search(right):
+                    location = right
+
+                # The left side has "TitleCompany" — try to extract company
+                # Company names are usually short, 1-3 words after the title
+                # We can't reliably split Title from Company without the <p> element,
+                # so leave the left side as-is for now
+                clean_title = left
+
+            card_data = JobCard(
+                title=clean_title,
+                company=company,
+                location=location,
+                url=url,
+                snippet=snippet,
+                source_email_id=source_email_id,
+                source_date=source_date,
             )
+
+            if job_id:
+                seen_job_ids[job_id] = card_data
+            else:
+                # No job ID in URL (search link), deduplicate by URL
+                if not any(c.url == url for c in seen_job_ids.values()):
+                    seen_job_ids[f"_url_{url}"] = card_data
+
         except Exception:
             logger.warning(
                 "Failed to extract job card from link in email %s",
@@ -253,4 +339,4 @@ def parse_linkedin_email(
             )
             continue
 
-    return cards
+    return list(seen_job_ids.values())
