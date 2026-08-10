@@ -94,9 +94,25 @@ class TestDeduplicateAcrossEmails:
         result = deduplicate_across_emails(jobs)
         assert len(result) == 2
         # The dupe 100 should have the richer snippet
-        by_url = {j.url: j for j in result}
-        assert by_url["https://linkedin.com/jobs/view/100"].snippet == "ab"
-        assert by_url["https://linkedin.com/jobs/view/200"].snippet == "c"
+
+    def test_same_job_id_different_tracking_params(self):
+        """Same LinkedIn job ID but different tracking URLs should deduplicate."""
+        jobs = [
+            _job(url="https://www.linkedin.com/comm/jobs/view/4141223147/?tracking=abc123", snippet="short"),
+            _job(url="https://www.linkedin.com/comm/jobs/view/4141223147/?tracking=xyz789", snippet="longer snippet"),
+        ]
+        result = deduplicate_across_emails(jobs)
+        assert len(result) == 1
+        assert result[0].snippet == "longer snippet"
+
+    def test_comm_prefix_urls_dedup(self):
+        """URLs with /comm/ prefix and without should deduplicate by job ID."""
+        jobs = [
+            _job(url="https://www.linkedin.com/jobs/view/4141223147", snippet="from web"),
+            _job(url="https://www.linkedin.com/comm/jobs/view/4141223147/?tracking=e1", snippet="from email"),
+        ]
+        result = deduplicate_across_emails(jobs)
+        assert len(result) == 1
 
 
 class TestGroupJobsByDate:

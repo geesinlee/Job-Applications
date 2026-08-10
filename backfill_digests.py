@@ -31,7 +31,7 @@ except ImportError:
     pass  # python-dotenv optional; env vars may be set externally
 
 from gmail_auth import GmailAccountManager
-from email_parser import JobCard, parse_linkedin_email
+from email_parser import JobCard, parse_linkedin_email, _extract_job_id
 from job_digest import (
     deduplicate_jobs,
     prefilter_jobs,
@@ -171,35 +171,43 @@ def fetch_all_linkedin_emails(
 # ---------------------------------------------------------------------------
 
 def deduplicate_across_emails(jobs: list[JobCard]) -> list[JobCard]:
-    """Remove duplicate jobs across multiple emails by URL.
+    """Remove duplicate jobs across multiple emails by LinkedIn job ID.
 
-    When the same URL appears in multiple emails, keep the JobCard with the
-    most complete information (longest snippet, or longest company name if
-    snippets are equal length, or earliest source_date as tiebreaker).
+    LinkedIn URLs contain tracking parameters that make the same job appear
+    with different URLs across emails. We deduplicate by extracting the numeric
+    job ID from the URL (/jobs/view/12345), falling back to the full URL for
+    search-style links without a job ID.
+
+    When the same job ID appears in multiple emails, keep the JobCard with the
+    most complete information (longest snippet, then longest company name,
+    then earliest source_date as tiebreaker).
     """
-    by_url: dict[str, JobCard] = {}
+    by_key: dict[str, JobCard] = {}
 
     for job in jobs:
-        url_key = job.url
-        existing = by_url.get(url_key)
+        # Extract job ID for dedup — same job, different tracking params
+        job_id = _extract_job_id(job.url)
+        dedup_key = job_id if job_id else job.url  # search URLs use full URL
+
+        existing = by_key.get(dedup_key)
 
         if existing is None:
-            by_url[url_key] = job
+            by_key[dedup_key] = job
             continue
 
         # Prefer the entry with more information
         # 1. Longer snippet = more info
         if len(job.snippet or "") > len(existing.snippet or ""):
-            by_url[url_key] = job
+            by_key[dedup_key] = job
         # 2. Longer company name (if snippets equal length)
         elif len(job.snippet or "") == len(existing.snippet or "") and len(job.company) > len(existing.company):
-            by_url[url_key] = job
+            by_key[dedup_key] = job
         # 3. Earlier date as tiebreaker
         elif len(job.snippet or "") == len(existing.snippet or "") and len(job.company) == len(existing.company):
             if job.source_date < existing.source_date:
-                by_url[url_key] = job
+                by_key[dedup_key] = job
 
-    return list(by_url.values())
+    return list(by_key.values())
 
 
 # ---------------------------------------------------------------------------
