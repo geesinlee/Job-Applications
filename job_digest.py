@@ -58,7 +58,7 @@ REFERENCE_CV_PATH = Path(os.environ.get(
 
 GMAIL_ACCOUNTS_CONFIG = os.environ.get("GMAIL_ACCOUNTS_CONFIG", "")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
-JOB_DIGEST_RECIPIENT = os.environ.get("JOB_DIGEST_RECIPIENT", "geesin.lee@gmail.com")
+JOB_DIGEST_RECIPIENT = os.environ.get("JOB_DIGEST_RECIPIENT", "geesin@gmail.com")
 
 DIGEST_DIR = ARTEFACTS_DIR / "digests"
 LAST_RUN_FILE = ARTEFACTS_DIR / ".job_digest_last_run"
