@@ -11,7 +11,7 @@ Pipeline:
   4. De-duplicate against tracker.json (URL exact + company+title fuzzy)
   5. Apply lightweight keyword pre-filter against Reference_CV.md
   6. Write daily Markdown digest to $JOB_APP_ARTEFACTS_DIR/digests/YYYY-MM-DD.md
-  7. Send summary email via SMTP (GMAIL_APP_PASSWORD)
+  7. Send summary email via SMTP (fleet-notify)
   8. Move processed LinkedIn emails to Trash via Gmail API
   9. Update last-run timestamp
 """
@@ -24,10 +24,8 @@ import json
 import logging
 import os
 import re
-import smtplib
 import sys
 from datetime import date, datetime, timezone, timedelta
-from email.message import EmailMessage
 from pathlib import Path
 
 import requests
@@ -40,6 +38,9 @@ except ImportError:
 
 from gmail_auth import GmailAccountManager
 from email_parser import JobCard, parse_linkedin_email
+
+from fleet_notify import send_email
+from fleet_notify.config import SmtpConfig
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -57,8 +58,18 @@ REFERENCE_CV_PATH = Path(os.environ.get(
 ))
 
 GMAIL_ACCOUNTS_CONFIG = os.environ.get("GMAIL_ACCOUNTS_CONFIG", "")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
-JOB_DIGEST_RECIPIENT = os.environ.get("JOB_DIGEST_RECIPIENT", "geesin@gmail.com")
+
+# SMTP config via fleet-notify — backward-compatible with legacy env vars:
+#   SMTP_USER/SMTP_PASS/SMTP_TO take priority,
+#   GMAIL_APP_PASSWORD/JOB_DIGEST_RECIPIENT are used as fallbacks.
+_SMTP_CONFIG = SmtpConfig(
+    host=os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    port=int(os.environ.get("SMTP_PORT", "587")),
+    user=os.environ.get("SMTP_USER", os.environ.get("JOB_DIGEST_RECIPIENT", "")),
+    password=os.environ.get("SMTP_PASS", os.environ.get("GMAIL_APP_PASSWORD", "")),
+    to=os.environ.get("SMTP_TO", os.environ.get("JOB_DIGEST_RECIPIENT", "")),
+    from_=os.environ.get("SMTP_FROM", os.environ.get("JOB_DIGEST_RECIPIENT", "")),
+)
 
 DIGEST_DIR = ARTEFACTS_DIR / "digests"
 LAST_RUN_FILE = ARTEFACTS_DIR / ".job_digest_last_run"
@@ -584,47 +595,13 @@ def _format_digest_email(surfaced: list[JobCard], stats: dict, date_str: str) ->
 
 
 def _send_digest_email(subject: str, body: str) -> bool:
-    """Send the digest via Gmail SMTP + App Password. Returns True on success."""
-    if not (JOB_DIGEST_RECIPIENT and GMAIL_APP_PASSWORD):
-        _log("WARNING: JOB_DIGEST_RECIPIENT or GMAIL_APP_PASSWORD not set, skipping email")
-        return False
-
-    msg = EmailMessage()
-    msg["From"] = JOB_DIGEST_RECIPIENT
-    msg["To"] = JOB_DIGEST_RECIPIENT
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(JOB_DIGEST_RECIPIENT, GMAIL_APP_PASSWORD)
-            smtp.send_message(msg)
-        return True
-    except Exception as e:
-        _log(f"ERROR: Failed to send digest email: {e}")
-        return False
+    """Send the digest via SMTP (fleet-notify). Returns True on success."""
+    return send_email(subject, body, config=_SMTP_CONFIG)
 
 
 def _send_alert_email(subject: str, body: str) -> bool:
     """Send an alert email (e.g. auth failure) via SMTP. Returns True on success."""
-    if not (JOB_DIGEST_RECIPIENT and GMAIL_APP_PASSWORD):
-        return False
-
-    msg = EmailMessage()
-    msg["From"] = JOB_DIGEST_RECIPIENT
-    msg["To"] = JOB_DIGEST_RECIPIENT
-    msg["Subject"] = subject
-    msg.set_content(body)
-
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(JOB_DIGEST_RECIPIENT, GMAIL_APP_PASSWORD)
-            smtp.send_message(msg)
-        return True
-    except Exception:
-        return False
+    return send_email(subject, body, config=_SMTP_CONFIG)
 
 
 # ---------------------------------------------------------------------------

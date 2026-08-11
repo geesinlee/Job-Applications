@@ -11,18 +11,15 @@ Steps:
   3. Save tracker.json, rsync it (+ profile.json) to the NAS share as backup
   4. Compile a digest (active applications by stage, overdue follow-ups,
      follow-ups due in the next 7 days)
-  5. Email the digest via smtplib (Gmail App Password — same pattern as
-     pi-3's GeBiz alerts, see GeBiz-Awards/notify.py)
+  5. Email the digest via fleet-notify shared SMTP library
   6. Log the run to tracker_daily.log
 """
 
 import json
 import os
-import smtplib
 import subprocess
 import sys
 from datetime import date, datetime, timezone
-from email.message import EmailMessage
 from pathlib import Path
 
 try:
@@ -37,8 +34,21 @@ BASE_DIR = Path(os.environ.get("JOB_APP_BASE_DIR", str(_SRC_DIR)))
 TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
 NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")
-DIGEST_EMAIL = os.environ.get("DIGEST_EMAIL", "")
-GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+
+# SMTP config via fleet-notify — backward-compatible with legacy env vars:
+#   SMTP_USER/SMTP_PASS/SMTP_TO take priority,
+#   GMAIL_APP_PASSWORD/DIGEST_EMAIL are used as fallbacks.
+from fleet_notify import send_email
+from fleet_notify.config import SmtpConfig
+
+_SMTP_CONFIG = SmtpConfig(
+    host=os.environ.get("SMTP_HOST", "smtp.gmail.com"),
+    port=int(os.environ.get("SMTP_PORT", "587")),
+    user=os.environ.get("SMTP_USER", os.environ.get("DIGEST_EMAIL", "")),
+    password=os.environ.get("SMTP_PASS", os.environ.get("GMAIL_APP_PASSWORD", "")),
+    to=os.environ.get("SMTP_TO", os.environ.get("DIGEST_EMAIL", "")),
+    from_=os.environ.get("SMTP_FROM", os.environ.get("DIGEST_EMAIL", "")),
+)
 LOG_PATH = Path(os.environ.get("JOB_APP_TRACKER_LOG_PATH", str(_SRC_DIR / "tracker_daily.log")))
 
 TERMINAL_STAGES = {"accepted", "rejected", "withdrawn"}
@@ -145,23 +155,9 @@ def _format_digest_email(digest: dict, today: str) -> tuple[str, str]:
 
 
 def _send_digest_email(subject: str, body: str) -> bool:
-    """Send the digest via Gmail SMTP + App Password. Returns True on
+    """Send the digest via SMTP (fleet-notify). Returns True on
     success, False if not configured or delivery failed."""
-    if not (DIGEST_EMAIL and GMAIL_APP_PASSWORD):
-        return False
-    msg = EmailMessage()
-    msg["From"] = DIGEST_EMAIL
-    msg["To"] = DIGEST_EMAIL
-    msg["Subject"] = subject
-    msg.set_content(body)
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587, timeout=15) as smtp:
-            smtp.starttls()
-            smtp.login(DIGEST_EMAIL, GMAIL_APP_PASSWORD)
-            smtp.send_message(msg)
-        return True
-    except Exception:
-        return False
+    return send_email(subject, body, config=_SMTP_CONFIG)
 
 
 def _sync_to_nas() -> bool:
