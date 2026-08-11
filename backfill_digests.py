@@ -257,20 +257,35 @@ def main() -> int:
 
     mgr = GmailAccountManager(GMAIL_ACCOUNTS_CONFIG)
     if not mgr.accounts:
-        _log("ERROR: No Gmail accounts configured")
+        _log("ERROR: No email accounts configured")
         return 1
 
-    account = next(iter(mgr.accounts))
-    _log(f"Using Gmail account: {account}")
+    # Authenticate all configured accounts; skip any that fail
+    authenticated_accounts: list[str] = []
+    for account_key in mgr.accounts:
+        token = mgr.get_access_token(account_key)
+        if token:
+            authenticated_accounts.append(account_key)
+            _log(f"Authenticated account: {account_key} ({mgr.accounts[account_key].email})")
+        else:
+            _log(f"WARNING: Skipping account '{account_key}' — auth failed")
 
-    token = mgr.get_access_token(account)
-    if not token:
-        _log("ERROR: Gmail API auth failure")
+    if not authenticated_accounts:
+        _log("ERROR: No email accounts could be authenticated")
         return 1
 
-    # 2. Fetch all LinkedIn emails
-    emails = fetch_all_linkedin_emails(mgr, account, args.after, args.before)
-    _log(f"Fetched {len(emails)} emails total")
+    # 2. Fetch LinkedIn emails from all authenticated accounts
+    all_emails: list[dict] = []
+    seen_ids: set[str] = set()
+    for account_key in authenticated_accounts:
+        account_emails = fetch_all_linkedin_emails(mgr, account_key, args.after, args.before)
+        _log(f"Account '{account_key}': fetched {len(account_emails)} emails")
+        for email_info in account_emails:
+            if email_info["id"] not in seen_ids:
+                all_emails.append(email_info)
+                seen_ids.add(email_info["id"])
+    emails = all_emails
+    _log(f"Total unique emails across {len(authenticated_accounts)} account(s): {len(emails)}")
 
     if not emails:
         print("No LinkedIn emails found in the specified date range.")
@@ -363,8 +378,12 @@ def main() -> int:
             if args.dry_run:
                 print(f"DRY RUN: Would trash {len(ids_to_trash)} emails older than {trash_before}")
             else:
-                trashed = trash_emails(mgr, account, ids_to_trash)
-                _log(f"Trashed {trashed}/{len(ids_to_trash)} old emails")
+                total_trashed = 0
+                for account_key in authenticated_accounts:
+                    trashed = trash_emails(mgr, account_key, ids_to_trash)
+                    _log(f"Account '{account_key}': trashed {trashed} old emails")
+                    total_trashed += trashed
+                _log(f"Trashed {total_trashed}/{len(ids_to_trash)} old emails across {len(authenticated_accounts)} account(s)")
         else:
             _log("No emails to trash")
 

@@ -10,7 +10,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from gmail_auth import AccountConfig, GmailAccountManager, VALID_CATEGORIES
+from gmail_auth import AccountConfig, GmailAccountManager, VALID_CATEGORIES, VALID_PROVIDERS
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,22 @@ class TestAccountConfig:
         }
         cfg = AccountConfig.from_dict("acct", data)
         assert cfg.credentials_file == "/path/to/creds.json"
+
+    def test_from_dict_provider_default(self):
+        """Provider defaults to 'gmail' when not specified."""
+        cfg = AccountConfig.from_dict("acct", {"email": "x@x.com"})
+        assert cfg.provider == "gmail"
+
+    def test_from_dict_provider_gmail_explicit(self):
+        """Explicit gmail provider is accepted."""
+        cfg = AccountConfig.from_dict("acct", {"email": "x@x.com", "provider": "gmail"})
+        assert cfg.provider == "gmail"
+
+    def test_from_dict_provider_unsupported_still_accepted_in_from_dict(self):
+        """AccountConfig.from_dict accepts any provider string — validation
+        happens in GmailAccountManager._load_config, not in the dataclass."""
+        cfg = AccountConfig.from_dict("acct", {"email": "x@x.com", "provider": "outlook"})
+        assert cfg.provider == "outlook"
 
 
 # ---------------------------------------------------------------------------
@@ -285,3 +301,37 @@ class TestGmailAccountManager:
 
         assert mgr.account_for_category("personal") == "personal_acct"
         assert mgr.account_for_category("work") is None
+
+    def test_unsupported_provider_skipped(self, tmp_path, caplog):
+        """Accounts with unsupported providers are skipped with a warning."""
+        import logging
+        cred_files = {
+            "gmail_acct": {
+                "client_id": "cid1",
+                "client_secret": "csec1",
+                "refresh_token": "rtok1",
+            }
+        }
+        accounts = {
+            "gmail_acct": {
+                "email": "alice@gmail.com",
+                "category": "personal",
+                "provider": "gmail",
+            },
+            "outlook_acct": {
+                "email": "bob@outlook.com",
+                "category": "work",
+                "provider": "outlook",
+            },
+        }
+        config_path = self._write_config(tmp_path, accounts, cred_files)
+        # outlook_acct has no cred file — but it should be skipped before that
+        # because 'outlook' is not in VALID_PROVIDERS
+
+        with caplog.at_level(logging.WARNING):
+            mgr = GmailAccountManager(config_path)
+
+        # Only the gmail account should be loaded
+        assert "gmail_acct" in mgr.accounts
+        assert "outlook_acct" not in mgr.accounts
+        assert "unsupported provider" in caplog.text.lower() or "outlook" in caplog.text

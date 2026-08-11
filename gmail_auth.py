@@ -1,4 +1,12 @@
-"""OAuth2 authentication and multi-account management for Gmail API."""
+"""OAuth2 authentication and multi-account management for Gmail API.
+
+Supports reading email from multiple accounts configured in gmail_accounts.json.
+Each account has a `provider` field (default "gmail") to prepare for future
+support of Outlook, Yahoo, and Apple email providers.
+
+For now, only "gmail" provider is implemented — others will raise an error
+at auth time so they fail clearly rather than silently.
+"""
 
 from __future__ import annotations
 
@@ -13,6 +21,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 VALID_CATEGORIES = {"personal", "work"}
+VALID_PROVIDERS = {"gmail"}
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -25,6 +34,7 @@ class AccountConfig:
     key: str
     email: str
     category: str
+    provider: str
     client_id: str
     client_secret: str
     refresh_token: str
@@ -40,6 +50,7 @@ class AccountConfig:
                 if data.get("category", "personal") in VALID_CATEGORIES
                 else "personal"
             ),
+            provider=data.get("provider", "gmail"),
             client_id=data.get("client_id", ""),
             client_secret=data.get("client_secret", ""),
             refresh_token=data.get("refresh_token", ""),
@@ -67,6 +78,15 @@ class GmailAccountManager:
             return
 
         for key, acct_data in data.get("accounts", {}).items():
+            provider = acct_data.get("provider", "gmail")
+            if provider not in VALID_PROVIDERS:
+                logger.warning(
+                    "Skipping account '%s': unsupported provider '%s' "
+                    "(supported: %s). Add the provider to VALID_PROVIDERS "
+                    "when implementing its auth flow.",
+                    key, provider, ", ".join(sorted(VALID_PROVIDERS)),
+                )
+                continue
             creds_path = acct_data.get("credentials_file", "")
             creds = self._load_credentials(creds_path)
             if creds is None:

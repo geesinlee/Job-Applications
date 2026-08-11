@@ -35,20 +35,11 @@ TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "track
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
 NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")
 
-# SMTP config via fleet-notify — backward-compatible with legacy env vars:
-#   SMTP_USER/SMTP_PASS/SMTP_TO take priority,
-#   GMAIL_APP_PASSWORD/DIGEST_EMAIL are used as fallbacks.
+# SMTP config via fleet-notify — auto-loaded from SMTP_* env vars.
 from fleet_notify import send_email
-from fleet_notify.config import SmtpConfig
+from fleet_notify.config import load_smtp_config
 
-_SMTP_CONFIG = SmtpConfig(
-    host=os.environ.get("SMTP_HOST", "smtp.gmail.com"),
-    port=int(os.environ.get("SMTP_PORT", "587")),
-    user=os.environ.get("SMTP_USER", os.environ.get("DIGEST_EMAIL", "")),
-    password=os.environ.get("SMTP_PASS", os.environ.get("GMAIL_APP_PASSWORD", "")),
-    to=os.environ.get("SMTP_TO", os.environ.get("DIGEST_EMAIL", "")),
-    from_=os.environ.get("SMTP_FROM", os.environ.get("DIGEST_EMAIL", "")),
-)
+_SMTP_CONFIG = load_smtp_config()
 LOG_PATH = Path(os.environ.get("JOB_APP_TRACKER_LOG_PATH", str(_SRC_DIR / "tracker_daily.log")))
 
 TERMINAL_STAGES = {"accepted", "rejected", "withdrawn"}

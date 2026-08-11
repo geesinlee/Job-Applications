@@ -95,7 +95,7 @@ databases.
   - Unit test `tracker_daily.py`: overdue flagging logic, email formatting, rsync command construction (mock subprocess)
   - Manual smoke: ingest existing Gartner PDF → verify tracker.json record + JD.md written to `JOB_APP_ARTEFACTS_DIR`
   - Manual smoke: seed profile from DXC CV → verify profile.json populated
-  - Manual smoke: run `tracker_daily.py` locally → verify email delivered to `geesin.lee@gmail.com`
+  - Manual smoke: run `tracker_daily.py` locally → verify email delivered to `geesin.lee@gmail.com` (SMTP sender account; Gmail API reads from geesin@gmail.com)
   - Update `README.md`: new tool inventory, deployment model (pi-4 MCP service + daily timer, NAS artefacts, Mac transient), env var setup, deploy steps
   - Update `README.md`: new tool inventory, workflow with new tools, env var setup, fleet deployment notes
 

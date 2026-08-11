@@ -112,51 +112,43 @@ class TestFormatDigestEmail:
 
 class TestSendDigestEmail:
     def test_returns_false_when_not_configured(self, monkeypatch):
-        monkeypatch.setattr(td, "DIGEST_EMAIL", "")
-        monkeypatch.setattr(td, "GMAIL_APP_PASSWORD", "")
+        # Empty SmtpConfig → is_configured is False → send_email returns False
+        from fleet_notify.config import SmtpConfig
+        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig())
         assert td._send_digest_email("subject", "body") is False
 
     def test_sends_via_smtp_when_configured(self, monkeypatch):
-        monkeypatch.setattr(td, "DIGEST_EMAIL", "user@gmail.com")
-        monkeypatch.setattr(td, "GMAIL_APP_PASSWORD", "app-password")
+        from fleet_notify.config import SmtpConfig
+        # Mock fleet_notify.send_email to verify _send_digest_email delegates correctly
+        calls = []
+        def fake_send_email(subject, body, config=None, *, to=None, from_=None, html=None):
+            calls.append((subject, body, config))
+            return True
 
-        sent_messages = []
-
-        class FakeSMTP:
-            def __init__(self, host, port, timeout=None):
-                self.host, self.port = host, port
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *args):
-                return False
-
-            def starttls(self):
-                pass
-
-            def login(self, user, password):
-                assert user == "user@gmail.com"
-                assert password == "app-password"
-
-            def send_message(self, msg):
-                sent_messages.append(msg)
-
-        monkeypatch.setattr(td.smtplib, "SMTP", FakeSMTP)
+        monkeypatch.setattr(td, "send_email", fake_send_email)
+        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig(
+            host="smtp.gmail.com", port=587,
+            user="user@gmail.com", password="app-password",
+            to="user@gmail.com", from_="user@gmail.com",
+        ))
         result = td._send_digest_email("subject", "body")
         assert result is True
-        assert len(sent_messages) == 1
-        assert sent_messages[0]["Subject"] == "subject"
+        assert len(calls) == 1
+        assert calls[0][0] == "subject"
+        assert calls[0][2] is td._SMTP_CONFIG
 
     def test_returns_false_on_smtp_exception(self, monkeypatch):
-        monkeypatch.setattr(td, "DIGEST_EMAIL", "user@gmail.com")
-        monkeypatch.setattr(td, "GMAIL_APP_PASSWORD", "app-password")
+        from fleet_notify.config import SmtpConfig
+        # Mock fleet_notify.send_email to simulate failure
+        def failing_send_email(subject, body, config=None, *, to=None, from_=None, html=None):
+            return False
 
-        class RaisingSMTP:
-            def __init__(self, *a, **k):
-                raise OSError("connection refused")
-
-        monkeypatch.setattr(td.smtplib, "SMTP", RaisingSMTP)
+        monkeypatch.setattr(td, "send_email", failing_send_email)
+        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig(
+            host="smtp.gmail.com", port=587,
+            user="user@gmail.com", password="app-password",
+            to="user@gmail.com", from_="user@gmail.com",
+        ))
         assert td._send_digest_email("subject", "body") is False
 
 

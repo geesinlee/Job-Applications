@@ -647,8 +647,8 @@ def _startup_validate():
 | `MCP_AUTH_TOKEN` | set in `.env` on pi-4 | not required for stdio | Bearer auth for HTTP mode |
 | `MCP_MODE` | `http` | `stdio` | FastMCP transport |
 | `NAS_SYNC_PATH` | `gs@rv-cloud.local:/share/job-app-data/` | n/a | rsync destination for tracker backup |
-| `DIGEST_EMAIL` | `geesin.lee@gmail.com` | n/a | Daily digest recipient |
-| `GMAIL_APP_PASSWORD` | set in `.env` on pi-4 | n/a | smtplib auth (same as pi-3 GeBiz pattern) |
+| `DIGEST_EMAIL` | `geesin.lee@gmail.com` | n/a | Daily digest recipient (SMTP sender — official work account) |
+| `GMAIL_APP_PASSWORD` | set in `.env` on pi-4 | n/a | SMTP auth for geesin.lee@gmail.com (NOT the Gmail API reader account) |
 
 ---
 

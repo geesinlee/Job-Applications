@@ -668,7 +668,9 @@ class TestDryRun:
              patch("job_digest.GmailAccountManager") as MockMgr, \
              patch("job_digest.query_linkedin_emails") as mock_query:
             mock_mgr = MockMgr.return_value
-            mock_mgr.accounts = ["test@gmail.com"]
+            mock_acct = MagicMock()
+            mock_acct.email = "test@gmail.com"
+            mock_mgr.accounts = {"test": mock_acct}
             mock_mgr.get_access_token.return_value = "fake-token"
             mock_query.return_value = [{"id": "m1", "date": "2026-08-05", "html": "<html></html>"}]
 
@@ -692,7 +694,9 @@ class TestDryRun:
              patch("job_digest.DIGEST_DIR", tmp_path / "digests"), \
              patch("job_digest.LAST_RUN_FILE", tmp_path / ".last_run"):
             mock_mgr = MockMgr.return_value
-            mock_mgr.accounts = ["test@gmail.com"]
+            mock_acct = MagicMock()
+            mock_acct.email = "test@gmail.com"
+            mock_mgr.accounts = {"test": mock_acct}
             mock_mgr.get_access_token.return_value = "fake-token"
             mock_query.return_value = [{"id": "m1", "date": "2026-08-05", "html": "<html></html>"}]
 
