@@ -379,3 +379,73 @@ class TestIdentifyGaps:
         assert gaps[0].status == GapStatus.MISSING
         assert gaps[0].requirement_id == "r3"
         assert len(gaps[0].matched_evidence) == 0
+
+
+class TestIntegrationAndEdgeCases:
+    """Integration and edge case tests for RequirementService."""
+
+    def test_full_lifecycle(self, requirement_service):
+        """Full pipeline: extract → match → identify gaps."""
+        from requirement_service import GapStatus
+
+        # Setup mock to return matches for Python but not Kubernetes
+        def mock_query(competencies=None, technologies=None, **kwargs):
+            if competencies and "Python" in competencies:
+                return [
+                    {
+                        "evidence_id": "e1",
+                        "statement": "Python",  # Exact match for deterministic
+                        "confidence": "LEVEL_A",
+                    }
+                ]
+            return []
+
+        requirement_service.evidence.query_evidence.side_effect = mock_query
+
+        jd_fields = {
+            "required_skills": ["Python", "Kubernetes"],
+        }
+
+        # Extract
+        requirements = requirement_service.extract_requirements(jd_fields)
+        assert len(requirements.requirements) == 2
+
+        # Match
+        evidence_matches = {}
+        for req in requirements.requirements:
+            evidence_matches[req.requirement_id] = (
+                requirement_service.match_requirement(req)
+            )
+
+        # Identify gaps
+        gaps = requirement_service.identify_gaps(requirements, evidence_matches)
+
+        python_gap = [g for g in gaps if "Python" in g.requirement_statement][0]
+        assert python_gap.status == GapStatus.COVERED
+
+        k8s_gap = [g for g in gaps if "Kubernetes" in g.requirement_statement][0]
+        assert k8s_gap.status == GapStatus.MISSING
+
+    def test_quantified_requirement_years(self, requirement_service):
+        """Quantified years_of_experience requirement handled correctly."""
+        jd_fields = {"years_of_experience": 10}
+
+        requirements = requirement_service.extract_requirements(jd_fields)
+
+        assert len(requirements.requirements) == 1
+        assert requirements.requirements[0].quantified == {"years": 10}
+        assert requirements.requirements[0].type == RequirementType.YEARS_EXPERIENCE
+
+    def test_multiple_skills_same_type(self, requirement_service):
+        """Multiple required skills create separate requirements."""
+        jd_fields = {
+            "required_skills": ["Python", "Go", "Rust"],
+        }
+
+        requirements = requirement_service.extract_requirements(jd_fields)
+
+        assert len(requirements.requirements) == 3
+        statements = [r.statement for r in requirements.requirements]
+        assert "Python" in statements
+        assert "Go" in statements
+        assert "Rust" in statements
