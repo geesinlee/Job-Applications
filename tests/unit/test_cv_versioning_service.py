@@ -340,6 +340,78 @@ class TestIntegrationAndEdgeCases:
         assert retrieved is not None
 
 
+class TestServiceWithPersistence:
+    """Tests for CVVersioningService with file persistence."""
+
+    def test_service_loads_records_from_disk(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that service loads existing CV records from disk on init."""
+        records_file = tmp_path / "cv_records.json"
+        test_records = [
+            {
+                "cv_id": "cv-existing",
+                "application_id": "app-001",
+                "version": "draft_1",
+                "status": "draft",
+                "content": "# Existing CV",
+                "evidence_used": [],
+                "created_at": "2026-08-16T12:00:00Z",
+                "approved_by": None,
+                "approved_at": None,
+                "finalized_at": None,
+            }
+        ]
+        records_file.write_text(json.dumps(test_records))
+
+        # Create service with cv_records_file
+        service = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+
+        # Verify records loaded
+        assert len(service.cv_records) == 1
+        assert "cv-existing" in service.cv_records
+        assert service.cv_records["cv-existing"].content == "# Existing CV"
+
+    def test_service_saves_records_on_create(self, cv_service, tmp_path):
+        """Test that service saves to disk when creating draft record."""
+        records_file = tmp_path / "cv_records.json"
+        cv_service.cv_records_file = records_file
+
+        # Create record
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+
+        # Verify file exists and contains record
+        assert records_file.exists()
+        data = json.loads(records_file.read_text())
+        assert len(data) == 1
+        assert data[0]["cv_id"] == record.cv_id
+
+    def test_service_saves_records_on_approve(self, cv_service, tmp_path):
+        """Test that service saves to disk when approving draft."""
+        records_file = tmp_path / "cv_records.json"
+        cv_service.cv_records_file = records_file
+
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_service.approve_draft(record.cv_id, "user-001")
+
+        # Verify file updated
+        data = json.loads(records_file.read_text())
+        assert data[0]["status"] == "approved"
+        assert data[0]["approved_by"] == "user-001"
+
+    def test_service_saves_records_on_finalize(self, cv_service, tmp_path):
+        """Test that service saves to disk when finalizing CV."""
+        records_file = tmp_path / "cv_records.json"
+        cv_service.cv_records_file = records_file
+
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_service.approve_draft(record.cv_id, "user-001")
+        cv_service.finalize_cv(record.cv_id)
+
+        # Verify file updated
+        data = json.loads(records_file.read_text())
+        assert data[0]["status"] == "final"
+        assert data[0]["finalized_at"] is not None
+
+
 class TestFilePersistence:
     """Tests for file-based persistence of CV records."""
 

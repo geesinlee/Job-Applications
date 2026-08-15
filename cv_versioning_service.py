@@ -112,12 +112,13 @@ except ImportError:
 class CVVersioningService:
     """Service for generating and versioning CVs backed by evidence."""
 
-    def __init__(self, requirement_service: "RequirementService", evidence_service: "EvidenceService"):
+    def __init__(self, requirement_service: "RequirementService", evidence_service: "EvidenceService", cv_records_file: Optional[Path] = None):
         """Initialize with dependencies.
 
         Args:
             requirement_service: RequirementService for requirement extraction and matching.
             evidence_service: EvidenceService for evidence queries.
+            cv_records_file: Optional path to persist CV records to JSON file.
 
         Raises:
             ValueError: If either service is None.
@@ -128,7 +129,8 @@ class CVVersioningService:
             raise ValueError("evidence_service is required")
         self.requirement_service = requirement_service
         self.evidence_service = evidence_service
-        self.cv_records: Dict[str, CVRecord] = {}  # In-memory store (will use persistence in Gate 7)
+        self.cv_records_file = cv_records_file
+        self.cv_records: Dict[str, CVRecord] = _load_cv_records(cv_records_file) if cv_records_file else {}
 
     def generate_draft_cv(self, application_id: str, jd_fields: Dict, profile: Dict) -> CVDraft:
         """Generate a draft CV by matching evidence to JD requirements.
@@ -202,6 +204,11 @@ class CVVersioningService:
 
         return "".join(lines)
 
+    def _persist_records(self) -> None:
+        """Save CV records to disk if cv_records_file is configured."""
+        if self.cv_records_file:
+            _save_cv_records(self.cv_records, self.cv_records_file)
+
     def create_draft_record(self, application_id: str, content: str, evidence_used: List[CVEvidenceUsage]) -> CVRecord:
         """Create a draft CV record.
 
@@ -229,6 +236,7 @@ class CVVersioningService:
             evidence_used=evidence_used,
         )
         self.cv_records[cv_id] = record
+        self._persist_records()
         return record
 
     def approve_draft(self, cv_id: str, approved_by: str) -> CVRecord:
@@ -253,6 +261,7 @@ class CVVersioningService:
         record.status = CVStatus.APPROVED
         record.approved_by = approved_by
         record.approved_at = _utc_now()
+        self._persist_records()
         return record
 
     def finalize_cv(self, cv_id: str) -> CVRecord:
@@ -275,6 +284,7 @@ class CVVersioningService:
 
         record.status = CVStatus.FINAL
         record.finalized_at = _utc_now()
+        self._persist_records()
         return record
 
     def get_cv_record(self, cv_id: str) -> Optional[CVRecord]:
