@@ -9,6 +9,9 @@ from cv_versioning_service import (
     CVStatus,
 )
 
+# Import Mock for use in test decorators
+from unittest.mock import Mock as MockObject
+
 
 @pytest.fixture
 def mock_requirement_service():
@@ -79,6 +82,72 @@ class TestCVVersioningServiceInit:
         """Test initialization fails when evidence_service is None."""
         with pytest.raises(ValueError, match="evidence_service is required"):
             CVVersioningService(mock_requirement_service, None)
+
+
+class TestGenerateDraftCV:
+    """Tests for generate_draft_cv method."""
+
+    def test_draft_generation_basic(self, cv_service, mock_requirement_service, mock_evidence_service):
+        """Test basic draft generation returns CVDraft with properties."""
+        # Setup mocks
+        mock_requirement_service.extract_requirements.return_value = [
+            Mock(id="req-1", text="Python expertise", confidence_threshold=0.7),
+            Mock(id="req-2", text="AWS experience", confidence_threshold=0.7),
+        ]
+        mock_evidence_service.find_matching_evidence.side_effect = [
+            [Mock(id="e-1", text="Python dev", similarity_score=0.9)],
+            [Mock(id="e-2", text="AWS cert", similarity_score=0.85)],
+        ]
+
+        profile = {
+            "work_experience": ["Senior Python Developer at TechCorp"],
+            "skills": ["Python", "AWS", "Docker"],
+            "education": ["BS Computer Science"],
+        }
+        jd_fields = {"required_skills": ["Python", "AWS"]}
+
+        # Act
+        draft = cv_service.generate_draft_cv("app-001", jd_fields, profile)
+
+        # Assert
+        assert isinstance(draft, CVDraft)
+        assert draft.content is not None
+        assert len(draft.content) > 0
+        assert draft.requirements_covered == 2
+        assert draft.requirements_partial == 0
+        assert draft.requirements_missing == 0
+        assert draft.coverage_percentage == 100.0
+        assert len(draft.evidence_used) == 2
+
+    def test_draft_includes_evidence_traceability(self, cv_service, mock_requirement_service, mock_evidence_service):
+        """Test draft includes evidence traceability linking evidence to requirements."""
+        # Setup mocks
+        mock_requirement_service.extract_requirements.return_value = [
+            Mock(id="req-1", text="Python expertise", confidence_threshold=0.7),
+            Mock(id="req-2", text="Leadership", confidence_threshold=0.7),
+        ]
+        mock_evidence_service.find_matching_evidence.side_effect = [
+            [Mock(id="e-1", text="Led Python team", similarity_score=0.95)],
+            [],  # No match for leadership
+        ]
+
+        profile = {
+            "work_experience": ["Tech Lead at StartupXYZ"],
+            "skills": ["Python", "Leadership"],
+            "education": [],
+        }
+
+        # Act
+        draft = cv_service.generate_draft_cv("app-002", {}, profile)
+
+        # Assert
+        assert draft.requirements_covered == 1
+        assert draft.requirements_partial == 0
+        assert draft.requirements_missing == 1
+        assert draft.coverage_percentage == 50.0
+        assert len(draft.evidence_used) == 1
+        assert draft.evidence_used[0].evidence_id == "e-1"
+        assert draft.evidence_used[0].requirement_id == "req-1"
 
 
 class TestCVVersioningServiceMethods:

@@ -96,7 +96,66 @@ class CVVersioningService:
         Returns:
             CVDraft with generated content and traceability.
         """
-        raise NotImplementedError()
+        requirements = self.requirement_service.extract_requirements(jd_fields)
+
+        covered_count = 0
+        partial_count = 0
+        missing_count = 0
+        evidence_used = []
+
+        for requirement in requirements:
+            matches = self.evidence_service.find_matching_evidence(requirement)
+
+            if matches and matches[0].similarity_score >= requirement.confidence_threshold:
+                covered_count += 1
+                match = matches[0]
+                evidence_used.append(CVEvidenceUsage(
+                    evidence_id=match.id,
+                    requirement_id=requirement.id,
+                    content_excerpt=match.text,
+                    placement_section="experience"
+                ))
+            elif matches:
+                partial_count += 1
+            else:
+                missing_count += 1
+
+        total_requirements = len(requirements) if requirements else 1
+        coverage_percentage = (covered_count / total_requirements * 100) if total_requirements > 0 else 0
+
+        content = self._build_cv_content(profile)
+
+        return CVDraft(
+            content=content,
+            evidence_used=evidence_used,
+            requirements_covered=covered_count,
+            requirements_partial=partial_count,
+            requirements_missing=missing_count,
+            coverage_percentage=coverage_percentage
+        )
+
+    def _build_cv_content(self, profile: Dict) -> str:
+        """Build CV content from profile sections."""
+        lines = ["# CV\n"]
+
+        if profile.get("work_experience"):
+            lines.append("## Experience\n")
+            for exp in profile["work_experience"]:
+                lines.append(f"- {exp}\n")
+            lines.append("")
+
+        if profile.get("skills"):
+            lines.append("## Skills\n")
+            for skill in profile["skills"]:
+                lines.append(f"- {skill}\n")
+            lines.append("")
+
+        if profile.get("education"):
+            lines.append("## Education\n")
+            for edu in profile["education"]:
+                lines.append(f"- {edu}\n")
+
+        return "".join(lines)
 
     def create_draft_record(self, application_id: str, content: str, evidence_used: List[CVEvidenceUsage]) -> CVRecord:
         """Create a draft CV record.
