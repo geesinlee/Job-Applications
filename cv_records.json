@@ -1,0 +1,26 @@
+[
+  {
+    "cv_id": "277881e3-1b40-4e90-acd4-d78c62986e07",
+    "application_id": "TestCo",
+    "version": "draft_1",
+    "status": "draft",
+    "content": "# Tailored CV\n\nExperience...",
+    "evidence_used": [],
+    "created_at": "2026-08-15T16:50:13Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "2167e71b-da78-4d34-a630-c01ec4acff10",
+    "application_id": "TrackCo",
+    "version": "draft_1",
+    "status": "draft",
+    "content": "# Tailored CV\n10 years of experience\n$5M ARR\n",
+    "evidence_used": [],
+    "created_at": "2026-08-15T16:50:17Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  }
+]

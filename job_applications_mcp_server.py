@@ -59,6 +59,7 @@ BASE_DIR = Path(os.environ.get("JOB_APP_BASE_DIR", str(_SRC_DIR)))
 ARTEFACTS_DIR = Path(os.environ.get("JOB_APP_ARTEFACTS_DIR", str(BASE_DIR)))
 TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
+CV_RECORDS_PATH = Path(os.environ.get("JOB_APP_CV_RECORDS_PATH", str(BASE_DIR / "cv_records.json")))
 BASE_CV_PATH = Path(os.environ.get(
     "JOB_APP_BASE_CV_PATH",
     str(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md"),
@@ -93,6 +94,13 @@ def _startup_validate() -> None:
         PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
         PROFILE_PATH.write_text(
             json.dumps({"schema_version": "1.0"}, indent=2),
+            encoding="utf-8",
+        )
+
+    if not CV_RECORDS_PATH.exists():
+        CV_RECORDS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        CV_RECORDS_PATH.write_text(
+            json.dumps([], indent=2),
             encoding="utf-8",
         )
 
@@ -142,14 +150,14 @@ def _save_profile(data: dict) -> None:
 
 
 def _nas_sync() -> None:
-    """Rsync tracker.json and profile.json to NAS backup path (non-blocking).
+    """Rsync tracker.json, profile.json, and cv_records.json to NAS backup path (non-blocking).
     Silently skips if NAS_SYNC_PATH is not configured.
     """
     if not NAS_SYNC_PATH:
         return
     try:
         subprocess.Popen(
-            ["rsync", "-a", str(TRACKER_PATH), str(PROFILE_PATH), NAS_SYNC_PATH],
+            ["rsync", "-a", str(TRACKER_PATH), str(PROFILE_PATH), str(CV_RECORDS_PATH), NAS_SYNC_PATH],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -182,13 +190,18 @@ _cv_service_instance = None
 def _get_or_create_cv_service():
     """Get or create CVVersioningService singleton.
 
-    Initializes with RequirementService and temporary evidence stub.
+    Initializes with RequirementService, temporary evidence stub, and file-based persistence.
+    CV records persist to CV_RECORDS_PATH with NAS rsync backup.
     """
     global _cv_service_instance
     if _cv_service_instance is None:
         evidence_service = _get_or_create_evidence_service()
         requirement_service = RequirementService(evidence_service)
-        _cv_service_instance = CVVersioningService(requirement_service, evidence_service)
+        _cv_service_instance = CVVersioningService(
+            requirement_service,
+            evidence_service,
+            cv_records_file=CV_RECORDS_PATH
+        )
     return _cv_service_instance
 
 
