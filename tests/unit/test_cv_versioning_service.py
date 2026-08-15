@@ -412,6 +412,131 @@ class TestServiceWithPersistence:
         assert data[0]["finalized_at"] is not None
 
 
+class TestCrossServicePersistence:
+    """Integration tests for persistence across service instantiations."""
+
+    def test_full_lifecycle_persists_across_services(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test complete CV lifecycle persists when service is destroyed and recreated."""
+        records_file = tmp_path / "cv_records.json"
+
+        # Service 1: Create and approve CV
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        draft = service1.create_draft_record("app-001", "# CV Content", [])
+        cv_id = draft.cv_id
+        service1.approve_draft(cv_id, "user-001")
+
+        # Service 2: Load and finalize
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        record = service2.get_cv_record(cv_id)
+        assert record is not None
+        assert record.status == CVStatus.APPROVED
+        assert record.approved_by == "user-001"
+
+        service2.finalize_cv(cv_id)
+
+        # Service 3: Verify final state
+        service3 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        final_record = service3.get_cv_record(cv_id)
+        assert final_record.status == CVStatus.FINAL
+        assert final_record.finalized_at is not None
+
+    def test_multiple_drafts_versioning_persists(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that draft version numbering persists across service restarts."""
+        records_file = tmp_path / "cv_records.json"
+
+        # Service 1: Create two drafts
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        r1 = service1.create_draft_record("app-001", "# CV v1", [])
+        r2 = service1.create_draft_record("app-001", "# CV v2", [])
+
+        assert r1.version == "draft_1"
+        assert r2.version == "draft_2"
+
+        # Service 2: Verify versions preserved, create draft_3
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        r3 = service2.create_draft_record("app-001", "# CV v3", [])
+
+        assert r3.version == "draft_3"
+        history = service2.get_cv_history("app-001")
+        assert len(history) == 3
+        assert [r.version for r in history] == ["draft_1", "draft_2", "draft_3"]
+
+    def test_evidence_traceability_persists_across_services(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that evidence usage is preserved across service restarts."""
+        records_file = tmp_path / "cv_records.json"
+
+        evidence = [
+            CVEvidenceUsage(
+                evidence_id="e-1",
+                requirement_id="r-1",
+                content_excerpt="Python expert",
+                placement_section="skills"
+            ),
+            CVEvidenceUsage(
+                evidence_id="e-2",
+                requirement_id="r-2",
+                content_excerpt="AWS certified",
+                placement_section="certifications"
+            ),
+        ]
+
+        # Service 1: Create record with evidence
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        record = service1.create_draft_record("app-001", "# CV", evidence)
+        cv_id = record.cv_id
+
+        # Service 2: Verify evidence preserved
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        retrieved = service2.get_cv_record(cv_id)
+        assert len(retrieved.evidence_used) == 2
+        assert retrieved.evidence_used[0].evidence_id == "e-1"
+        assert retrieved.evidence_used[1].evidence_id == "e-2"
+        assert retrieved.evidence_used[0].content_excerpt == "Python expert"
+        assert retrieved.evidence_used[1].placement_section == "certifications"
+
+    def test_multiple_applications_independent_persistence(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that CV records for different applications are independent."""
+        records_file = tmp_path / "cv_records.json"
+
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        r1 = service1.create_draft_record("app-001", "# CV for App 1", [])
+        r2 = service1.create_draft_record("app-002", "# CV for App 2", [])
+
+        # Service 2: Verify histories independent
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        history_1 = service2.get_cv_history("app-001")
+        history_2 = service2.get_cv_history("app-002")
+
+        assert len(history_1) == 1
+        assert len(history_2) == 1
+        assert history_1[0].application_id == "app-001"
+        assert history_2[0].application_id == "app-002"
+
+    def test_state_consistency_after_approval_state_change(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that all fields remain consistent after approve/finalize state changes."""
+        records_file = tmp_path / "cv_records.json"
+
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        original_content = "# CV with important content"
+        original_evidence = [CVEvidenceUsage("e-1", "r-1", "text", "section")]
+        record1 = service1.create_draft_record("app-001", original_content, original_evidence)
+        cv_id = record1.cv_id
+
+        service1.approve_draft(cv_id, "approver-user")
+        service1.finalize_cv(cv_id)
+
+        # Service 2: Verify content, evidence, metadata all intact
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service, cv_records_file=records_file)
+        final = service2.get_cv_record(cv_id)
+
+        assert final.content == original_content
+        assert len(final.evidence_used) == 1
+        assert final.evidence_used[0].evidence_id == "e-1"
+        assert final.approved_by == "approver-user"
+        assert final.status == CVStatus.FINAL
+        assert final.finalized_at is not None
+
+
 class TestFilePersistence:
     """Tests for file-based persistence of CV records."""
 
