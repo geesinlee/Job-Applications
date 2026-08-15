@@ -22,5 +22,41 @@
     "approved_by": null,
     "approved_at": null,
     "finalized_at": null
+  },
+  {
+    "cv_id": "81027ba7-3b57-4838-8bb2-5de96ea566c2",
+    "application_id": "TestCo",
+    "version": "draft_2",
+    "status": "draft",
+    "content": "# Tailored CV\n\nGrew ARR by 40% to $2M SGD region.\n\nLed team of 5 engineers.\n",
+    "evidence_used": [],
+    "created_at": "2026-08-15T16:51:01Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "46675263-917c-4f6c-9dce-64a690d46f63",
+    "application_id": "TestCo",
+    "version": "draft_3",
+    "status": "draft",
+    "content": "# Tailored CV\n\nGrew ARR by 40% to $2M SGD region.\n\nLed a cross-functional team.\n",
+    "evidence_used": [],
+    "created_at": "2026-08-15T16:51:01Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "4085f95c-d592-4d1a-81e9-542c75935cf3",
+    "application_id": "TestCo",
+    "version": "draft_4",
+    "status": "draft",
+    "content": "# Tailored CV\n\nExperience...",
+    "evidence_used": [],
+    "created_at": "2026-08-15T16:51:01Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
   }
 ]

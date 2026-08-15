@@ -1,10 +1,13 @@
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, TYPE_CHECKING
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 import uuid
 import json
+
+if TYPE_CHECKING:
+    from db_client import DatabaseBackend
 
 
 def _utc_now() -> str:
@@ -112,13 +115,21 @@ except ImportError:
 class CVVersioningService:
     """Service for generating and versioning CVs backed by evidence."""
 
-    def __init__(self, requirement_service: "RequirementService", evidence_service: "EvidenceService", cv_records_file: Optional[Path] = None):
+    def __init__(
+        self,
+        requirement_service: "RequirementService",
+        evidence_service: "EvidenceService",
+        cv_records_file: Optional[Path] = None,
+        db_backend: Optional["DatabaseBackend"] = None,
+    ):
         """Initialize with dependencies.
 
         Args:
             requirement_service: RequirementService for requirement extraction and matching.
             evidence_service: EvidenceService for evidence queries.
-            cv_records_file: Optional path to persist CV records to JSON file.
+            cv_records_file: Optional path to persist CV records to JSON file (Gate 7).
+            db_backend: Optional DatabaseBackend for Postgres persistence (Gate 8).
+                       If provided, takes precedence over cv_records_file.
 
         Raises:
             ValueError: If either service is None.
@@ -130,7 +141,15 @@ class CVVersioningService:
         self.requirement_service = requirement_service
         self.evidence_service = evidence_service
         self.cv_records_file = cv_records_file
-        self.cv_records: Dict[str, CVRecord] = _load_cv_records(cv_records_file) if cv_records_file else {}
+        self.db_backend = db_backend
+
+        # Load records from backend
+        if db_backend:
+            self.cv_records: Dict[str, CVRecord] = db_backend.load_cv_records()
+        elif cv_records_file:
+            self.cv_records: Dict[str, CVRecord] = _load_cv_records(cv_records_file)
+        else:
+            self.cv_records: Dict[str, CVRecord] = {}
 
     def generate_draft_cv(self, application_id: str, jd_fields: Dict, profile: Dict) -> CVDraft:
         """Generate a draft CV by matching evidence to JD requirements.
@@ -205,8 +224,10 @@ class CVVersioningService:
         return "".join(lines)
 
     def _persist_records(self) -> None:
-        """Save CV records to disk if cv_records_file is configured."""
-        if self.cv_records_file:
+        """Save CV records to backend (Postgres or JSON file)."""
+        if self.db_backend:
+            self.db_backend.save_cv_records(self.cv_records)
+        elif self.cv_records_file:
             _save_cv_records(self.cv_records, self.cv_records_file)
 
     def create_draft_record(self, application_id: str, content: str, evidence_used: List[CVEvidenceUsage]) -> CVRecord:
