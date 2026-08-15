@@ -230,6 +230,113 @@ class TestDraftWorkflow:
         assert history[1].version == "draft_2"
 
 
+class TestIntegrationAndEdgeCases:
+    """Integration and edge case tests for CVVersioningService."""
+
+    def test_full_cv_lifecycle(self, cv_service, mock_requirement_service, mock_evidence_service):
+        """Test complete CV lifecycle: generate → create → approve → finalize."""
+        mock_requirement_service.extract_requirements.return_value = [
+            Mock(id="req-1", text="Python", confidence_threshold=0.7),
+        ]
+        mock_evidence_service.find_matching_evidence.return_value = [
+            Mock(id="e-1", text="Python dev", similarity_score=0.9),
+        ]
+
+        # Generate draft
+        draft = cv_service.generate_draft_cv("app-001", {}, {
+            "work_experience": ["Python Dev"],
+            "skills": ["Python"],
+            "education": []
+        })
+        assert draft.coverage_percentage == 100.0
+
+        # Create record
+        record = cv_service.create_draft_record("app-001", draft.content, draft.evidence_used)
+        cv_id = record.cv_id
+        assert record.status == CVStatus.DRAFT
+
+        # Approve
+        record = cv_service.approve_draft(cv_id, "user-001")
+        assert record.status == CVStatus.APPROVED
+        assert record.approved_by == "user-001"
+
+        # Finalize
+        record = cv_service.finalize_cv(cv_id)
+        assert record.status == CVStatus.FINAL
+        assert record.finalized_at is not None
+
+        # Check history
+        history = cv_service.get_cv_history("app-001")
+        assert len(history) == 1
+        assert history[0].cv_id == cv_id
+
+    def test_multiple_draft_versions(self, cv_service):
+        """Test creating multiple drafts with proper versioning."""
+        record1 = cv_service.create_draft_record("app-001", "# CV v1", [])
+        record2 = cv_service.create_draft_record("app-001", "# CV v2", [])
+        record3 = cv_service.create_draft_record("app-001", "# CV v3", [])
+
+        assert record1.version == "draft_1"
+        assert record2.version == "draft_2"
+        assert record3.version == "draft_3"
+
+        history = cv_service.get_cv_history("app-001")
+        assert len(history) == 3
+
+    def test_evidence_traceability_preserved(self, cv_service):
+        """Test evidence usage preserved through creation workflow."""
+        evidence = [
+            CVEvidenceUsage(
+                evidence_id="e-1",
+                requirement_id="req-1",
+                content_excerpt="Python expert",
+                placement_section="experience"
+            ),
+            CVEvidenceUsage(
+                evidence_id="e-2",
+                requirement_id="req-2",
+                content_excerpt="AWS certified",
+                placement_section="skills"
+            ),
+        ]
+
+        record = cv_service.create_draft_record("app-001", "# CV", evidence)
+        assert len(record.evidence_used) == 2
+        assert record.evidence_used[0].evidence_id == "e-1"
+        assert record.evidence_used[1].evidence_id == "e-2"
+
+        retrieved = cv_service.get_cv_record(record.cv_id)
+        assert len(retrieved.evidence_used) == 2
+
+    def test_approve_nonexistent_cv(self, cv_service):
+        """Test approving non-existent CV raises error."""
+        with pytest.raises(ValueError, match="not found"):
+            cv_service.approve_draft("nonexistent-cv", "user-001")
+
+    def test_finalize_nonexistent_cv(self, cv_service):
+        """Test finalizing non-existent CV raises error."""
+        with pytest.raises(ValueError, match="not found"):
+            cv_service.finalize_cv("nonexistent-cv")
+
+    def test_approve_already_approved(self, cv_service):
+        """Test approving already-approved CV raises error."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_service.approve_draft(record.cv_id, "user-001")
+
+        with pytest.raises(ValueError, match="draft status"):
+            cv_service.approve_draft(record.cv_id, "user-002")
+
+    def test_empty_evidence_list(self, cv_service):
+        """Test creating record with empty evidence list."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        assert len(record.evidence_used) == 0
+        assert record.status == CVStatus.DRAFT
+
+        # Should be retrievable and updatable
+        retrieved = cv_service.get_cv_record(record.cv_id)
+        assert retrieved is not None
+
+
 class TestCVVersioningServiceMethods:
     """Tests for CVVersioningService method signatures."""
 
