@@ -129,3 +129,63 @@ class Gap:
     matched_evidence: List[RequirementMatch] = field(default_factory=list)  # Matching evidence
     reasoning: str = ""                    # Explanation of the gap analysis
     analyzed_at: str = field(default_factory=_utc_now)
+
+
+class RequirementService:
+    """Service for extracting and matching job requirements against evidence."""
+
+    def __init__(self, evidence_service):
+        """Initialize with EvidenceService dependency.
+
+        Args:
+            evidence_service: EvidenceService instance for querying evidence.
+
+        Raises:
+            ValueError: If evidence_service is None.
+        """
+        if evidence_service is None:
+            raise ValueError("evidence_service is required")
+        self.evidence = evidence_service
+
+    def extract_requirements(self, jd_fields: Dict) -> JobRequirements:
+        """Extract structured requirements from JD fields.
+
+        Args:
+            jd_fields: Dict with keys like 'required_skills', 'preferred_skills',
+                      'years_of_experience', 'industry', 'seniority_level'.
+
+        Returns:
+            JobRequirements object with list of Requirement objects.
+        """
+        raise NotImplementedError()
+
+    def match_requirement(self, requirement: Requirement) -> List[RequirementMatch]:
+        """Find evidence matching a single requirement using semantic similarity.
+
+        Calls evidence_service.query_evidence() with requirement statement.
+        Uses Gate 4's semantic matching (deterministic + semantic word-overlap).
+
+        Args:
+            requirement: Requirement object to match.
+
+        Returns:
+            List of RequirementMatch objects (empty if no matches).
+        """
+        raise NotImplementedError()
+
+    def identify_gaps(self, requirements: JobRequirements, evidence_matches: Dict) -> List[Gap]:
+        """Classify requirement coverage based on evidence matches.
+
+        For each requirement:
+        - covered: matched_evidence count >= 1 AND max(similarity) >= requirement.confidence_threshold
+        - partial: matched_evidence count >= 1 AND max(similarity) < requirement.confidence_threshold
+        - missing: no matched evidence
+
+        Args:
+            requirements: JobRequirements object.
+            evidence_matches: Dict mapping requirement_id → List[RequirementMatch].
+
+        Returns:
+            List of Gap objects with status and reasoning.
+        """
+        raise NotImplementedError()
