@@ -243,7 +243,68 @@ class RequirementService:
         Returns:
             List of RequirementMatch objects (empty if no matches).
         """
-        raise NotImplementedError()
+        # Map requirement type to evidence query field
+        query_field_map = {
+            RequirementType.COMPETENCY: "competencies",
+            RequirementType.TECHNOLOGY: "technologies",
+            RequirementType.INDUSTRY: "industries",
+            RequirementType.GEOGRAPHY: "geographies",
+            RequirementType.YEARS_EXPERIENCE: "competencies",
+            RequirementType.SENIORITY: "competencies",
+        }
+
+        query_field = query_field_map.get(requirement.type, "competencies")
+
+        # Query evidence service with requirement statement
+        matched_evidence = self.evidence.query_evidence(
+            **{query_field: [requirement.statement]},
+            min_confidence=requirement.confidence
+        )
+
+        # Convert to RequirementMatch objects
+        matches = []
+        for evidence in matched_evidence:
+            similarity = self._calculate_similarity(
+                requirement.statement,
+                evidence.get("statement", "")
+            )
+
+            match = RequirementMatch(
+                requirement_id=requirement.requirement_id,
+                evidence_id=evidence.get("evidence_id", ""),
+                evidence_statement=evidence.get("statement", ""),
+                similarity_score=similarity,
+                match_type=MatchType.DETERMINISTIC if similarity >= 0.95 else MatchType.SEMANTIC,
+                evidence_confidence=EvidenceConfidence(evidence.get("confidence", "LEVEL_C")),
+            )
+            matches.append(match)
+
+        return matches
+
+    def _calculate_similarity(self, requirement_text: str, evidence_text: str) -> float:
+        """Calculate similarity between requirement and evidence using word overlap.
+
+        Implements deterministic (exact) or semantic (word-overlap Jaccard similarity).
+        """
+        req_lower = requirement_text.lower().strip()
+        ev_lower = evidence_text.lower().strip()
+
+        # Deterministic: exact match
+        if req_lower == ev_lower:
+            return 1.0
+
+        # Word-overlap heuristic using Jaccard similarity
+        req_words = set(req_lower.split())
+        ev_words = set(ev_lower.split())
+
+        if not req_words or not ev_words:
+            return 0.0
+
+        # Jaccard similarity: intersection / union
+        intersection = len(req_words & ev_words)
+        union = len(req_words | ev_words)
+
+        return intersection / union if union > 0 else 0.0
 
     def identify_gaps(self, requirements: JobRequirements, evidence_matches: Dict) -> List[Gap]:
         """Classify requirement coverage based on evidence matches.

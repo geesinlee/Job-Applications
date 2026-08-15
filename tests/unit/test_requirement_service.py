@@ -12,6 +12,9 @@ from requirement_service import (
     Requirement,
     RequirementType,
     ConfidenceLevel,
+    RequirementMatch,
+    MatchType,
+    EvidenceConfidence,
 )
 
 
@@ -190,3 +193,82 @@ class TestExtractRequirements:
         for req in result.requirements:
             assert req.extracted_at is not None
             assert "T" in req.extracted_at  # ISO 8601 format
+
+
+class TestMatchRequirement:
+    """Tests for RequirementService.match_requirement method."""
+
+    def test_match_deterministic(self, requirement_service):
+        """Test deterministic match when requirement statement exactly equals evidence statement."""
+        # Setup mock to return exact match
+        requirement_service.evidence.query_evidence.return_value = [
+            {
+                "evidence_id": "e1",
+                "statement": "Python",
+                "confidence": "LEVEL_A",
+            }
+        ]
+
+        requirement = Requirement(
+            requirement_id="r1",
+            statement="Python",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.8,
+        )
+
+        matches = requirement_service.match_requirement(requirement)
+
+        assert len(matches) == 1
+        assert matches[0].requirement_id == "r1"
+        assert matches[0].evidence_id == "e1"
+        assert matches[0].match_type == MatchType.DETERMINISTIC
+        assert matches[0].similarity_score == 1.0
+        assert matches[0].evidence_confidence == EvidenceConfidence.LEVEL_A
+
+    def test_match_semantic(self, requirement_service):
+        """Test semantic match when requirement and evidence have partial word overlap."""
+        requirement_service.evidence.query_evidence.return_value = [
+            {
+                "evidence_id": "e2",
+                "statement": "Python experience and expertise",
+                "confidence": "LEVEL_B",
+            }
+        ]
+
+        requirement = Requirement(
+            requirement_id="r2",
+            statement="Python",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.7,
+        )
+
+        matches = requirement_service.match_requirement(requirement)
+
+        assert len(matches) == 1
+        assert matches[0].requirement_id == "r2"
+        assert matches[0].evidence_id == "e2"
+        assert matches[0].match_type == MatchType.SEMANTIC
+        assert 0.0 < matches[0].similarity_score < 1.0
+        assert matches[0].evidence_confidence == EvidenceConfidence.LEVEL_B
+
+    def test_match_no_evidence(self, requirement_service):
+        """Test that no matches returns empty list."""
+        requirement_service.evidence.query_evidence.return_value = []
+
+        requirement = Requirement(
+            requirement_id="r3",
+            statement="Rare Skill",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.8,
+        )
+
+        matches = requirement_service.match_requirement(requirement)
+
+        assert len(matches) == 0
+        assert isinstance(matches, list)

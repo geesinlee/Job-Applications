@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "job-applications": {
+      "serverUrl": "http://gs-pi-4.local:8086/mcp",
+      "headers": {
+        "Authorization": "Bearer unCQGOYLuBke8zyw0seb5PGu3bNGCidB2qXRok6YlJY"
+      }
+    }
+  }
+}
