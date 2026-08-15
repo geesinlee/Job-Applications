@@ -1,0 +1,27 @@
+# One-time migration container for Job-Applications: JSON → Postgres on NAS
+# Usage on NAS:
+#   docker build -f Dockerfile.migrate -t job-app-migrate:latest .
+#   docker run --rm \
+#     -e DATABASE_URL=postgresql://user:pass@db:5432/ai_assistant_db \
+#     -v /path/to/job-app-data:/data:ro \
+#     job-app-migrate:latest \
+#     python3 migrate_json_to_postgres.py --json-path /data/cv_records.json
+
+FROM python:3.13-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir psycopg2-binary
+
+# Copy migration script
+COPY scripts/migrate_json_to_postgres.py /app/
+
+# Set entrypoint
+ENTRYPOINT ["python3", "/app/migrate_json_to_postgres.py"]
+CMD ["--help"]
