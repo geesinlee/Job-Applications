@@ -44,6 +44,8 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 
+from requirement_service import RequirementService
+
 __version__ = "0.3.0"
 
 # ---------------------------------------------------------------------------
@@ -152,6 +154,25 @@ def _nas_sync() -> None:
         )
     except FileNotFoundError:
         pass  # rsync not installed; skip silently
+
+
+def _get_or_create_evidence_service():
+    """Lazy-load EvidenceService instance (temporary integration point).
+
+    In Gate 6+, this will be replaced with proper dependency injection.
+    For now, we create a minimal instance pointing to the tracker/profile store.
+    """
+    # Placeholder: returns a stub that queries tracker evidence
+    # This will be replaced when Gate 4 (EvidenceService) is integrated
+    # For now, score_match continues to work via Claude's LLM-based scoring
+    # and extracted_requirements are provided for Claude's reference
+
+    class TemporaryEvidenceStub:
+        def query_evidence(self, **filters):
+            # Stub: will be replaced when Gate 4 is integrated
+            return []
+
+    return TemporaryEvidenceStub()
 
 
 # ---------------------------------------------------------------------------
@@ -1748,12 +1769,26 @@ def score_match(company: str, role_title: str) -> dict:
         "work_experience": profile.get("work_experience", []),
     }
 
+    # Use RequirementService to extract requirements from JD
+    evidence_service = _get_or_create_evidence_service()
+    req_service = RequirementService(evidence_service)
+    requirements = req_service.extract_requirements(jd_fields)
+
     return {
         "ok": True,
         "company": company,
         "role_title": role_title,
         "jd_fields": jd_fields,
         "profile_summary": profile_summary,
+        "extracted_requirements": [
+            {
+                "statement": req.statement,
+                "type": req.type.value,
+                "confidence": req.confidence.value,
+                "source": req.source_jd_field,
+            }
+            for req in requirements.requirements
+        ],
         "weights": MATCH_SCORE_WEIGHTS,
         "instructions": (
             "Score each of the five named dimensions in `weights` from 0-100, then combine "
@@ -1877,6 +1912,19 @@ def analyse_gaps(company: str, role_title: str) -> dict:
     match_score = app.get("match_score")
     missing_skills = match_score.get("missing_skills", []) if match_score else []
 
+    # Use RequirementService to extract and match requirements
+    evidence_service = _get_or_create_evidence_service()
+    req_service = RequirementService(evidence_service)
+    requirements = req_service.extract_requirements(jd_fields)
+
+    # Get requirement matches (empty for now, will be populated in Gate 6)
+    evidence_matches = {}
+    for req in requirements.requirements:
+        evidence_matches[req.requirement_id] = req_service.match_requirement(req)
+
+    # Identify gaps
+    gaps = req_service.identify_gaps(requirements, evidence_matches)
+
     return {
         "ok": True,
         "company": company,
@@ -1885,6 +1933,15 @@ def analyse_gaps(company: str, role_title: str) -> dict:
         "base_cv_content": base_cv_content,
         "missing_skills": missing_skills,
         "match_score_available": match_score is not None,
+        "extracted_gaps": [
+            {
+                "requirement": gap.requirement_statement,
+                "type": gap.type.value,
+                "status": gap.status.value,
+                "reasoning": gap.reasoning,
+            }
+            for gap in gaps
+        ],
         "gap_schema": {
             "gap_id": "unique string identifier",
             "category": "missing | understated | mismatch",
