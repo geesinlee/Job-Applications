@@ -45,6 +45,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 
 from requirement_service import RequirementService
+from cv_versioning_service import CVVersioningService
 
 __version__ = "0.3.0"
 
@@ -173,6 +174,22 @@ def _get_or_create_evidence_service():
             return []
 
     return TemporaryEvidenceStub()
+
+
+_cv_service_instance = None
+
+
+def _get_or_create_cv_service():
+    """Get or create CVVersioningService singleton.
+
+    Initializes with RequirementService and temporary evidence stub.
+    """
+    global _cv_service_instance
+    if _cv_service_instance is None:
+        evidence_service = _get_or_create_evidence_service()
+        requirement_service = RequirementService(evidence_service)
+        _cv_service_instance = CVVersioningService(requirement_service, evidence_service)
+    return _cv_service_instance
 
 
 # ---------------------------------------------------------------------------
@@ -2740,6 +2757,22 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
     })
     _save_tracker(tracker)
 
+    # Create CV record via CVVersioningService
+    cv_service = _get_or_create_cv_service()
+    try:
+        cv_record = cv_service.create_draft_record(
+            application_id=company,
+            content=content,
+            evidence_used=[]
+        )
+        cv_id = cv_record.cv_id
+        version = cv_record.version
+        status = cv_record.status.value
+    except Exception as e:
+        cv_id = None
+        version = "unknown"
+        status = "error"
+
     return {
         "company": company,
         "path": str(cv_file),
@@ -2747,6 +2780,9 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
         "diff_entries": len(diff_summary),
         "content_length": len(content),
         "saved": True,
+        "cv_id": cv_id,
+        "version": version,
+        "status": status,
     }
 
 
