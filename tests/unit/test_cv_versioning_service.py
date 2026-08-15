@@ -150,6 +150,86 @@ class TestGenerateDraftCV:
         assert draft.evidence_used[0].requirement_id == "req-1"
 
 
+class TestDraftWorkflow:
+    """Tests for draft creation, approval, and finalization workflow."""
+
+    def test_create_draft_record(self, cv_service):
+        """Test creating a draft CV record."""
+        content = "# CV\n## Experience\nPython Developer"
+        evidence = [CVEvidenceUsage(
+            evidence_id="e-1",
+            requirement_id="req-1",
+            content_excerpt="Python",
+            placement_section="experience"
+        )]
+
+        record = cv_service.create_draft_record("app-001", content, evidence)
+
+        assert record.application_id == "app-001"
+        assert record.content == content
+        assert record.status == CVStatus.DRAFT
+        assert record.version == "draft_1"
+        assert len(record.evidence_used) == 1
+        assert record.cv_id is not None
+        assert record.created_at is not None
+        assert record.approved_by is None
+        assert record.approved_at is None
+
+    def test_approve_draft(self, cv_service):
+        """Test approving a draft CV."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_id = record.cv_id
+
+        approved = cv_service.approve_draft(cv_id, "user-001")
+
+        assert approved.status == CVStatus.APPROVED
+        assert approved.approved_by == "user-001"
+        assert approved.approved_at is not None
+        assert approved.cv_id == cv_id
+
+    def test_finalize_cv(self, cv_service):
+        """Test finalizing an approved CV."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_service.approve_draft(record.cv_id, "user-001")
+
+        finalized = cv_service.finalize_cv(record.cv_id)
+
+        assert finalized.status == CVStatus.FINAL
+        assert finalized.finalized_at is not None
+        assert finalized.cv_id == record.cv_id
+
+    def test_cannot_finalize_unapproved_draft(self, cv_service):
+        """Test that finalizing unapproved draft raises error."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+
+        with pytest.raises(ValueError, match="not approved"):
+            cv_service.finalize_cv(record.cv_id)
+
+    def test_get_cv_record(self, cv_service):
+        """Test retrieving a CV record by ID."""
+        record = cv_service.create_draft_record("app-001", "# CV", [])
+        cv_id = record.cv_id
+
+        retrieved = cv_service.get_cv_record(cv_id)
+
+        assert retrieved is not None
+        assert retrieved.cv_id == cv_id
+        assert retrieved.application_id == "app-001"
+
+    def test_get_cv_history(self, cv_service):
+        """Test retrieving all CV versions for an application."""
+        record1 = cv_service.create_draft_record("app-001", "# CV v1", [])
+        record2 = cv_service.create_draft_record("app-001", "# CV v2", [])
+
+        history = cv_service.get_cv_history("app-001")
+
+        assert len(history) == 2
+        assert history[0].cv_id == record1.cv_id
+        assert history[1].cv_id == record2.cv_id
+        assert history[0].version == "draft_1"
+        assert history[1].version == "draft_2"
+
+
 class TestCVVersioningServiceMethods:
     """Tests for CVVersioningService method signatures."""
 

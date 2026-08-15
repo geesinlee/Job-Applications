@@ -168,7 +168,23 @@ class CVVersioningService:
         Returns:
             CVRecord with status=draft.
         """
-        raise NotImplementedError()
+        draft_count = sum(
+            1 for record in self.cv_records.values()
+            if record.application_id == application_id and record.version.startswith("draft_")
+        )
+        version = f"draft_{draft_count + 1}"
+        cv_id = str(uuid.uuid4())
+
+        record = CVRecord(
+            cv_id=cv_id,
+            application_id=application_id,
+            version=version,
+            status=CVStatus.DRAFT,
+            content=content,
+            evidence_used=evidence_used,
+        )
+        self.cv_records[cv_id] = record
+        return record
 
     def approve_draft(self, cv_id: str, approved_by: str) -> CVRecord:
         """Mark a draft as approved, enabling finalization.
@@ -183,7 +199,16 @@ class CVVersioningService:
         Raises:
             ValueError: If CV is not in draft status.
         """
-        raise NotImplementedError()
+        record = self.cv_records.get(cv_id)
+        if not record:
+            raise ValueError(f"CV record {cv_id} not found")
+        if record.status != CVStatus.DRAFT:
+            raise ValueError(f"CV must be in draft status to approve, current status: {record.status.value}")
+
+        record.status = CVStatus.APPROVED
+        record.approved_by = approved_by
+        record.approved_at = _utc_now()
+        return record
 
     def finalize_cv(self, cv_id: str) -> CVRecord:
         """Mark an approved CV as final.
@@ -197,7 +222,15 @@ class CVVersioningService:
         Raises:
             ValueError: If CV is not approved.
         """
-        raise NotImplementedError()
+        record = self.cv_records.get(cv_id)
+        if not record:
+            raise ValueError(f"CV record {cv_id} not found")
+        if record.status != CVStatus.APPROVED:
+            raise ValueError(f"CV must be approved before finalizing; currently {record.status.value}, not approved")
+
+        record.status = CVStatus.FINAL
+        record.finalized_at = _utc_now()
+        return record
 
     def get_cv_record(self, cv_id: str) -> Optional[CVRecord]:
         """Retrieve a CV record by ID.
@@ -208,7 +241,7 @@ class CVVersioningService:
         Returns:
             CVRecord if found, None otherwise.
         """
-        raise NotImplementedError()
+        return self.cv_records.get(cv_id)
 
     def get_cv_history(self, application_id: str) -> List[CVRecord]:
         """Get all CV versions for an application.
@@ -219,4 +252,9 @@ class CVVersioningService:
         Returns:
             List of CVRecords (draft, approved, final) ordered by created_at.
         """
-        raise NotImplementedError()
+        records = [
+            record for record in self.cv_records.values()
+            if record.application_id == application_id
+        ]
+        records.sort(key=lambda r: r.created_at)
+        return records
