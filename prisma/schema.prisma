@@ -1,0 +1,58 @@
+// CV Versioning Service Data Model
+// Defines CVRecord, CVEvidenceUsage, Application for persistent storage on NAS Postgres
+
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Application {
+  id          String     @id @default(uuid())
+  name        String     @unique
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  cvRecords   CVRecord[]
+
+  @@index([name])
+}
+
+model CVRecord {
+  id              String     @id @default(uuid())
+  cvId            String     @unique
+  applicationId   String
+  version         String     // draft_1, draft_2, final, etc.
+  status          String     // draft | approved | final
+  content         String     @db.Text
+  createdAt       DateTime   @default(now())
+  approvedBy      String?
+  approvedAt      DateTime?
+  finalizedAt     DateTime?
+
+  evidence        CVEvidenceUsage[]
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([cvId])
+}
+
+model CVEvidenceUsage {
+  id              String     @id @default(uuid())
+  cvRecordId      String
+  evidenceId      String
+  requirementId   String
+  contentExcerpt  String     @db.Text
+  placementSection String
+
+  record          CVRecord   @relation(fields: [cvRecordId], references: [id], onDelete: Cascade)
+
+  @@index([cvRecordId])
+  @@index([evidenceId])
+  @@index([requirementId])
+}
