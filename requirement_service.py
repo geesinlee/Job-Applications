@@ -321,4 +321,41 @@ class RequirementService:
         Returns:
             List of Gap objects with status and reasoning.
         """
-        raise NotImplementedError()
+        gaps = []
+
+        for requirement in requirements.requirements:
+            matched = evidence_matches.get(requirement.requirement_id, [])
+
+            if not matched:
+                # No evidence found
+                status = GapStatus.MISSING
+                reasoning = f"No evidence found for '{requirement.statement}'"
+            else:
+                # Get best match (highest similarity)
+                best_match = max(matched, key=lambda m: m.similarity_score)
+
+                if best_match.similarity_score >= requirement.confidence_threshold:
+                    status = GapStatus.COVERED
+                    reasoning = (
+                        f"Covered by: '{best_match.evidence_statement}' "
+                        f"(similarity {best_match.similarity_score:.2f})"
+                    )
+                else:
+                    status = GapStatus.PARTIAL
+                    reasoning = (
+                        f"Partial match: '{best_match.evidence_statement}' "
+                        f"(similarity {best_match.similarity_score:.2f}, "
+                        f"threshold {requirement.confidence_threshold})"
+                    )
+
+            gap = Gap(
+                requirement_id=requirement.requirement_id,
+                requirement_statement=requirement.statement,
+                type=requirement.type,
+                status=status,
+                matched_evidence=matched,
+                reasoning=reasoning,
+            )
+            gaps.append(gap)
+
+        return gaps

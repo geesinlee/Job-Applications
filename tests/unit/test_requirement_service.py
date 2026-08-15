@@ -272,3 +272,110 @@ class TestMatchRequirement:
 
         assert len(matches) == 0
         assert isinstance(matches, list)
+
+
+class TestIdentifyGaps:
+    """Tests for RequirementService.identify_gaps method."""
+
+    def test_gap_covered(self, requirement_service):
+        """Gap is covered when similarity >= threshold."""
+        from requirement_service import Gap, GapStatus
+
+        matches = [
+            RequirementMatch(
+                requirement_id="r1",
+                evidence_id="e1",
+                evidence_statement="Python expert",
+                similarity_score=0.95,
+                match_type=MatchType.DETERMINISTIC,
+                evidence_confidence=EvidenceConfidence.LEVEL_A,
+            )
+        ]
+
+        requirement = Requirement(
+            requirement_id="r1",
+            statement="Python",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.8,
+        )
+
+        job_reqs = JobRequirements(
+            jd_id="jd1",
+            company="Test",
+            role_title="Dev",
+            requirements=[requirement],
+        )
+
+        gaps = requirement_service.identify_gaps(job_reqs, {"r1": matches})
+
+        assert len(gaps) == 1
+        assert gaps[0].status == GapStatus.COVERED
+        assert gaps[0].requirement_id == "r1"
+        assert len(gaps[0].matched_evidence) > 0
+        assert gaps[0].reasoning != ""
+
+    def test_gap_partial(self, requirement_service):
+        """Gap is partial when similarity < threshold but > 0."""
+        from requirement_service import GapStatus
+
+        matches = [
+            RequirementMatch(
+                requirement_id="r2",
+                evidence_id="e2",
+                evidence_statement="Some Python experience",
+                similarity_score=0.65,  # < 0.8 threshold
+                match_type=MatchType.SEMANTIC,
+                evidence_confidence=EvidenceConfidence.LEVEL_B,
+            )
+        ]
+
+        requirement = Requirement(
+            requirement_id="r2",
+            statement="Python",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.8,
+        )
+
+        job_reqs = JobRequirements(
+            jd_id="jd2",
+            company="Test",
+            role_title="Dev",
+            requirements=[requirement],
+        )
+
+        gaps = requirement_service.identify_gaps(job_reqs, {"r2": matches})
+
+        assert len(gaps) == 1
+        assert gaps[0].status == GapStatus.PARTIAL
+        assert gaps[0].requirement_id == "r2"
+
+    def test_gap_missing(self, requirement_service):
+        """Gap is missing when no evidence matches."""
+        from requirement_service import GapStatus
+
+        requirement = Requirement(
+            requirement_id="r3",
+            statement="Rare Skill",
+            type=RequirementType.COMPETENCY,
+            source_jd_field="required_skills",
+            confidence=ConfidenceLevel.LEVEL_A,
+            confidence_threshold=0.8,
+        )
+
+        job_reqs = JobRequirements(
+            jd_id="jd3",
+            company="Test",
+            role_title="Dev",
+            requirements=[requirement],
+        )
+
+        gaps = requirement_service.identify_gaps(job_reqs, {"r3": []})
+
+        assert len(gaps) == 1
+        assert gaps[0].status == GapStatus.MISSING
+        assert gaps[0].requirement_id == "r3"
+        assert len(gaps[0].matched_evidence) == 0
