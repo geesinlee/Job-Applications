@@ -1,6 +1,9 @@
 """Unit tests for CVVersioningService."""
 import pytest
-from unittest.mock import Mock
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import Mock, patch
 from cv_versioning_service import (
     CVVersioningService,
     CVRecord,
@@ -335,5 +338,88 @@ class TestIntegrationAndEdgeCases:
         # Should be retrievable and updatable
         retrieved = cv_service.get_cv_record(record.cv_id)
         assert retrieved is not None
+
+
+class TestFilePersistence:
+    """Tests for file-based persistence of CV records."""
+
+    def test_save_cv_records_to_json(self, cv_service, tmp_path):
+        """Test saving CV records to JSON file."""
+        # Create records
+        r1 = cv_service.create_draft_record("app-001", "# CV v1", [])
+        r2 = cv_service.create_draft_record("app-001", "# CV v2", [])
+
+        # Save to file
+        records_file = tmp_path / "cv_records.json"
+        from cv_versioning_service import _save_cv_records
+        _save_cv_records(cv_service.cv_records, records_file)
+
+        # Verify file exists and contains JSON
+        assert records_file.exists()
+        data = json.loads(records_file.read_text())
+        assert len(data) == 2
+        assert data[0]["cv_id"] == r1.cv_id
+        assert data[1]["cv_id"] == r2.cv_id
+
+    def test_load_cv_records_from_json(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test loading CV records from JSON file."""
+        # Create a records file
+        records_file = tmp_path / "cv_records.json"
+        test_records = [
+            {
+                "cv_id": "cv-001",
+                "application_id": "app-001",
+                "version": "draft_1",
+                "status": "draft",
+                "content": "# CV",
+                "evidence_used": [],
+                "created_at": "2026-08-16T12:00:00Z",
+                "approved_by": None,
+                "approved_at": None,
+                "finalized_at": None,
+            }
+        ]
+        records_file.write_text(json.dumps(test_records))
+
+        # Load from file
+        from cv_versioning_service import _load_cv_records
+        loaded = _load_cv_records(records_file)
+
+        assert len(loaded) == 1
+        assert loaded["cv-001"].cv_id == "cv-001"
+        assert loaded["cv-001"].status == CVStatus.DRAFT
+
+    def test_load_empty_records_file(self, tmp_path):
+        """Test loading from nonexistent file returns empty dict."""
+        records_file = tmp_path / "nonexistent.json"
+        from cv_versioning_service import _load_cv_records
+        loaded = _load_cv_records(records_file)
+
+        assert loaded == {}
+
+    def test_persistence_survives_service_restart(self, mock_requirement_service, mock_evidence_service, tmp_path):
+        """Test that CV records persist across service instantiations."""
+        records_file = tmp_path / "cv_records.json"
+
+        # Create first service, add records
+        service1 = CVVersioningService(mock_requirement_service, mock_evidence_service)
+        service1.cv_records_file = records_file
+        r1 = service1.create_draft_record("app-001", "# CV v1", [])
+        cv_id_1 = r1.cv_id
+
+        # Save to file
+        from cv_versioning_service import _save_cv_records
+        _save_cv_records(service1.cv_records, records_file)
+
+        # Create second service, load from file
+        service2 = CVVersioningService(mock_requirement_service, mock_evidence_service)
+        from cv_versioning_service import _load_cv_records
+        service2.cv_records = _load_cv_records(records_file)
+
+        # Verify record exists in new service
+        retrieved = service2.get_cv_record(cv_id_1)
+        assert retrieved is not None
+        assert retrieved.content == "# CV v1"
+        assert retrieved.status == CVStatus.DRAFT
 
 

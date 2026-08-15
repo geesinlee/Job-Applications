@@ -1,13 +1,58 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 import uuid
+import json
 
 
 def _utc_now() -> str:
     """Return current UTC time in ISO 8601 format with Z suffix."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _save_cv_records(records: Dict[str, "CVRecord"], filepath: Path) -> None:
+    """Save CV records dictionary to JSON file.
+
+    Args:
+        records: Dictionary of cv_id -> CVRecord
+        filepath: Path to write JSON file to
+    """
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    data = []
+    for record in records.values():
+        record_dict = asdict(record)
+        record_dict["status"] = record.status.value
+        record_dict["evidence_used"] = [asdict(e) for e in record.evidence_used]
+        data.append(record_dict)
+    filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _load_cv_records(filepath: Path) -> Dict[str, "CVRecord"]:
+    """Load CV records from JSON file.
+
+    Args:
+        filepath: Path to JSON file
+
+    Returns:
+        Dictionary of cv_id -> CVRecord. Returns empty dict if file doesn't exist.
+    """
+    if not filepath.exists():
+        return {}
+
+    data = json.loads(filepath.read_text(encoding="utf-8"))
+    records = {}
+
+    for item in data:
+        evidence_data = item.pop("evidence_used", [])
+        evidence_list = [CVEvidenceUsage(**e) for e in evidence_data]
+        item["evidence_used"] = evidence_list
+        item["status"] = CVStatus(item["status"])
+        record = CVRecord(**item)
+        records[record.cv_id] = record
+
+    return records
 
 
 class CVStatus(str, Enum):
