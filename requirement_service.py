@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 from datetime import datetime, timezone
 from enum import Enum
+import uuid
 
 
 def _utc_now() -> str:
@@ -16,6 +17,7 @@ class RequirementType(str, Enum):
     GEOGRAPHY = "geography"
     YEARS_EXPERIENCE = "years_experience"
     SENIORITY = "seniority"
+    INDUSTRY = "industry"
 
 
 class ConfidenceLevel(str, Enum):
@@ -157,7 +159,77 @@ class RequirementService:
         Returns:
             JobRequirements object with list of Requirement objects.
         """
-        raise NotImplementedError()
+        requirements_list = []
+
+        # Extract required_skills (LEVEL_A, threshold 0.8)
+        for skill in jd_fields.get("required_skills", []):
+            req = Requirement(
+                requirement_id=str(uuid.uuid4()),
+                statement=skill,
+                type=RequirementType.COMPETENCY,
+                source_jd_field="required_skills",
+                confidence=ConfidenceLevel.LEVEL_A,
+                confidence_threshold=0.8,
+            )
+            requirements_list.append(req)
+
+        # Extract preferred_skills (LEVEL_B, threshold 0.7)
+        for skill in jd_fields.get("preferred_skills", []):
+            req = Requirement(
+                requirement_id=str(uuid.uuid4()),
+                statement=skill,
+                type=RequirementType.COMPETENCY,
+                source_jd_field="preferred_skills",
+                confidence=ConfidenceLevel.LEVEL_B,
+                confidence_threshold=0.7,
+            )
+            requirements_list.append(req)
+
+        # Extract years_of_experience (LEVEL_A, quantified)
+        years = jd_fields.get("years_of_experience")
+        if years is not None:
+            req = Requirement(
+                requirement_id=str(uuid.uuid4()),
+                statement=f"{years}+ years",
+                type=RequirementType.YEARS_EXPERIENCE,
+                source_jd_field="years_of_experience",
+                confidence=ConfidenceLevel.LEVEL_A,
+                confidence_threshold=0.8,
+                quantified={"years": years},
+            )
+            requirements_list.append(req)
+
+        # Extract industry (LEVEL_B, threshold 0.6)
+        for industry in jd_fields.get("industry", []):
+            req = Requirement(
+                requirement_id=str(uuid.uuid4()),
+                statement=industry,
+                type=RequirementType.INDUSTRY,
+                source_jd_field="industry",
+                confidence=ConfidenceLevel.LEVEL_B,
+                confidence_threshold=0.6,
+            )
+            requirements_list.append(req)
+
+        # Extract seniority_level (LEVEL_A)
+        seniority = jd_fields.get("seniority_level")
+        if seniority is not None:
+            req = Requirement(
+                requirement_id=str(uuid.uuid4()),
+                statement=seniority,
+                type=RequirementType.SENIORITY,
+                source_jd_field="seniority_level",
+                confidence=ConfidenceLevel.LEVEL_A,
+                confidence_threshold=0.8,
+            )
+            requirements_list.append(req)
+
+        return JobRequirements(
+            jd_id=str(uuid.uuid4()),
+            company="",  # Will be set by caller
+            role_title="",  # Will be set by caller
+            requirements=requirements_list,
+        )
 
     def match_requirement(self, requirement: Requirement) -> List[RequirementMatch]:
         """Find evidence matching a single requirement using semantic similarity.
