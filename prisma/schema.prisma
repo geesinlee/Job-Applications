@@ -34,6 +34,7 @@ model CVRecord {
   finalizedAt     DateTime?
 
   evidence        CVEvidenceUsage[]
+  evidenceExtracted StructuredEvidence[]
   application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
 
   @@index([applicationId])
@@ -55,4 +56,34 @@ model CVEvidenceUsage {
   @@index([cvRecordId])
   @@index([evidenceId])
   @@index([requirementId])
+}
+
+model StructuredEvidence {
+  id                  String   @id @default(cuid())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Evidence content
+  achievement         String   @db.Text
+  context             String   @db.Text
+  impact              String   @db.Text
+  skills_demonstrated String[] // array of skill strings; stored as JSON in Postgres
+
+  // Metadata
+  job_title           String
+  company_name        String
+  time_period_start   DateTime?
+  time_period_end     DateTime?
+  source_section      String   // e.g., "Experience", "Projects", "Skills"
+
+  // Foreign key to source ground-truth CV
+  source_cv_id        String
+  source_cv           CVRecord @relation(fields: [source_cv_id], references: [id], onDelete: Cascade)
+
+  // Indexes
+  @@index([source_cv_id])
+  @@index([job_title])
+  @@index([company_name])
+  @@index([time_period_start])
+  @@index([time_period_end])
 }
