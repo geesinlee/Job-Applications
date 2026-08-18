@@ -10,3 +10,8 @@ python-docx~=1.1
 
 # PDF export — requires system Cairo/Pango (x86_64 NAS container or Homebrew on Mac); not required on pi
 weasyprint~=61.0
+
+# Gate 10: LangChain workflow orchestration
+langchain>=0.1.0,<1.0
+langchain-google-genai>=0.1.0
+langchain-core>=0.1.0
