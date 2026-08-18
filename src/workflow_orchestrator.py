@@ -1,6 +1,6 @@
 """LangChain workflow orchestrator for Gate 10 interactive evidence discovery."""
 
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -24,8 +24,8 @@ class WorkflowOrchestrator:
             temperature=0,  # Deterministic
             api_key=os.getenv("GOOGLE_API_KEY")
         )
-        self.tools: list[StructuredTool] = []
-        self.agent_executor: Optional[AgentExecutor] = None
+        self.tools = []
+        self.agent_executor = None
 
     def register_tool(self, tool: StructuredTool) -> None:
         """Register a tool with the orchestrator."""
@@ -60,7 +60,7 @@ Available tools: {tool_names}
             prompt
         )
 
-    def run_workflow(self, task: str) -> Dict[str, Any]:
+    def run_workflow(self, task: str):
         """Execute a workflow step and return results."""
         if not self.agent_executor:
             self.initialize_agent()
