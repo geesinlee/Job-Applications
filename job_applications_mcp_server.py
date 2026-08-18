@@ -46,6 +46,13 @@ from mcp.server.auth.settings import AuthSettings
 
 from requirement_service import RequirementService
 from cv_versioning_service import CVVersioningService
+from src.evidence_service import (
+    CVGenerationService,
+    JDAnalyzer,
+    EvidenceMatcher,
+    CVAssembler,
+)
+from src.evidence_backend import PostgresEvidenceBackend
 
 __version__ = "0.3.0"
 
@@ -3201,6 +3208,84 @@ def ingest_from_discovery(company: str, date: str) -> dict:
         "jd_path": str(jd_path),
         "hint": "Use score_match for full LLM-based matching, then save_match_score to record results.",
     }
+
+
+# ============================================================================
+# Gate 9: Evidence-based CV Generation via LLM (Task 10)
+# ============================================================================
+
+@mcp.tool()
+def generate_cv_from_jd_with_evidence(
+    ground_truth_cv_id: str,
+    job_description: str,
+    company_name: str = "",
+    role_title: str = ""
+) -> dict:
+    """
+    Generate a tailored CV for a job application using evidence-based matching.
+
+    This tool:
+    1. Analyzes the job description to extract skills and criteria
+    2. Matches evidence from the ground-truth CV against the JD
+    3. Assembles a tailored CV with intelligent ordering and rephrasing
+
+    Args:
+        ground_truth_cv_id: ID of the source CV to extract evidence from
+        job_description: Full job description text
+        company_name: Company name (optional, for context)
+        role_title: Role title (optional, for context)
+
+    Returns:
+        dict with:
+        - tailored_cv: formatted CV text ready to use
+        - matched_evidence_count: number of evidence items matched to the JD
+        - jd_analysis: extracted skills, criteria, and importance ranking
+    """
+
+    # Get Postgres backend
+    db_url = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost/job_applications")
+    backend = PostgresEvidenceBackend(db_url=db_url)
+
+    try:
+        # Initialize components
+        analyzer = JDAnalyzer(model=os.getenv("JD_ANALYZER_LLM_MODEL", "claude-haiku-4-5-20251001"))
+        matcher = EvidenceMatcher()
+        assembler = CVAssembler()
+
+        # Create service and generate CV
+        service = CVGenerationService(
+            analyzer=analyzer,
+            matcher=matcher,
+            assembler=assembler,
+            backend=backend
+        )
+
+        result = service.generate_cv(
+            ground_truth_cv_id=ground_truth_cv_id,
+            jd_text=job_description,
+            company_name=company_name,
+            role_title=role_title
+        )
+
+        return {
+            "tailored_cv": result["tailored_cv"],
+            "matched_evidence_count": result["matched_evidence_count"],
+            "jd_analysis": {
+                "explicit_skills": result["jd_analysis"].explicit_skills,
+                "inferred_skills": result["jd_analysis"].inferred_skills,
+                "critical_criteria": result["jd_analysis"].critical_criteria,
+                "importance_ranking": result["jd_analysis"].importance_ranking,
+                "company_name": result["jd_analysis"].company_name,
+                "role_title": result["jd_analysis"].role_title,
+            }
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "message": "Failed to generate tailored CV"
+        }
+    finally:
+        backend.close()
 
 
 if __name__ == "__main__":

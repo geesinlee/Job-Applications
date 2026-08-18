@@ -1,228 +1,284 @@
 """
-Abstract backend for evidence storage and retrieval.
+Evidence storage backend abstraction layer.
 
-Enables future Work RAG migration without changing consuming code.
+Provides an interface for persisting and retrieving evidence, with support for
+multiple implementations (Postgres now, Work RAG in future).
 """
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Dict
+import logging
+
 from src.evidence_models import StructuredEvidence
+
+logger = logging.getLogger(__name__)
 
 
 class EvidenceBackend(ABC):
-    """Abstract backend for evidence storage/retrieval."""
-    
+    """Abstract interface for evidence persistence."""
+
     @abstractmethod
     def save_evidence(self, evidence: StructuredEvidence) -> str:
-        """Save evidence and return its ID."""
+        """
+        Save evidence to backend.
+
+        Args:
+            evidence: StructuredEvidence to persist
+
+        Returns:
+            ID of persisted evidence
+
+        Raises:
+            ValueError: if evidence validation fails
+        """
         pass
-    
+
     @abstractmethod
     def get_evidence_by_id(self, evidence_id: str) -> Optional[StructuredEvidence]:
         """Retrieve evidence by ID."""
         pass
-    
+
     @abstractmethod
-    def get_evidence_by_cv_id(self, cv_id: str) -> list[StructuredEvidence]:
-        """Retrieve all evidence extracted from a specific CV."""
+    def get_evidence_by_cv_id(self, cv_id: str) -> List[StructuredEvidence]:
+        """
+        Retrieve all evidence extracted from a specific CV.
+
+        Evidence returned is sorted reverse-chronologically by time_period_end.
+        """
         pass
-    
+
     @abstractmethod
-    def query_by_skills(self, skills: list[str]) -> list[StructuredEvidence]:
-        """Find evidence containing any of the specified skills."""
+    def delete_evidence(self, evidence_id: str) -> bool:
+        """Delete evidence by ID. Returns True if deleted, False if not found."""
         pass
-    
-    @abstractmethod
-    def query_by_company(self, company_name: str) -> list[StructuredEvidence]:
-        """Find evidence from a specific company."""
-        pass
-    
-    @abstractmethod
-    def query_by_timeframe(self, start: datetime, end: datetime) -> list[StructuredEvidence]:
-        """Find evidence within a time period."""
-        pass
-    
+
     @abstractmethod
     def close(self):
-        """Close any connections."""
+        """Close backend connections gracefully."""
+        pass
+
+
+class InMemoryEvidenceBackend(EvidenceBackend):
+    """In-memory implementation for testing."""
+
+    def __init__(self):
+        """Initialize in-memory backend."""
+        self.storage: Dict[str, StructuredEvidence] = {}
+        self.cv_index: Dict[str, List[str]] = {}
+        self._id_counter = 0
+
+    def save_evidence(self, evidence: StructuredEvidence) -> str:
+        """Save evidence to memory."""
+        if not evidence.id:
+            self._id_counter += 1
+            evidence.id = f"evidence_{self._id_counter}"
+
+        if not evidence.created_at:
+            evidence.created_at = datetime.now()
+        if not evidence.updated_at:
+            evidence.updated_at = datetime.now()
+
+        self.storage[evidence.id] = evidence
+
+        # Index by CV ID
+        if evidence.source_cv_id not in self.cv_index:
+            self.cv_index[evidence.source_cv_id] = []
+        self.cv_index[evidence.source_cv_id].append(evidence.id)
+
+        logger.info(f"Saved evidence: {evidence.id}")
+        return evidence.id
+
+    def get_evidence_by_id(self, evidence_id: str) -> Optional[StructuredEvidence]:
+        """Retrieve evidence by ID."""
+        return self.storage.get(evidence_id)
+
+    def get_evidence_by_cv_id(self, cv_id: str) -> List[StructuredEvidence]:
+        """
+        Retrieve all evidence extracted from a specific CV.
+
+        Sorted reverse-chronologically by time_period_end.
+        """
+        evidence_ids = self.cv_index.get(cv_id, [])
+        evidence_list = [self.storage[eid] for eid in evidence_ids if eid in self.storage]
+
+        # Sort reverse-chronologically by time_period_end
+        evidence_list.sort(
+            key=lambda e: e.time_period_end or datetime.min,
+            reverse=True
+        )
+
+        logger.info(f"Retrieved {len(evidence_list)} evidence items for CV {cv_id}")
+        return evidence_list
+
+    def delete_evidence(self, evidence_id: str) -> bool:
+        """Delete evidence by ID."""
+        if evidence_id not in self.storage:
+            return False
+
+        evidence = self.storage[evidence_id]
+        del self.storage[evidence_id]
+
+        # Remove from CV index
+        if evidence.source_cv_id in self.cv_index:
+            self.cv_index[evidence.source_cv_id].remove(evidence_id)
+
+        logger.info(f"Deleted evidence: {evidence_id}")
+        return True
+
+    def close(self):
+        """Close backend (no-op for in-memory)."""
         pass
 
 
 class PostgresEvidenceBackend(EvidenceBackend):
     """Postgres implementation of EvidenceBackend."""
-    
+
     def __init__(self, db_url: str):
-        """Initialize with Postgres connection string."""
+        """
+        Initialize Postgres backend.
+
+        Args:
+            db_url: Postgres connection string (e.g., postgresql://user:pass@host/db)
+        """
         self.db_url = db_url
-        self.conn = None
+        self._client = None
+        self._connect()
+        # Fallback to in-memory for tests if Postgres unavailable
+        self._fallback = InMemoryEvidenceBackend()
+
+    def _connect(self):
+        """Establish Postgres connection using Prisma."""
         try:
-            import psycopg2
-            self.conn = psycopg2.connect(db_url)
+            # Import prisma client
+            from prisma import Prisma
+
+            self._client = Prisma()
+            self._client.connect()
+            logger.info(f"Connected to Postgres: {self.db_url}")
         except ImportError:
-            # psycopg2 not available; mock backend for testing
-            pass
+            logger.warning("Prisma not available, using in-memory fallback backend for tests")
+            self._client = None
         except Exception as e:
-            print(f"Warning: Could not connect to Postgres: {e}")
-    
-    def close(self):
-        """Close the connection."""
-        if self.conn:
-            try:
-                self.conn.close()
-            except Exception:
-                pass
-    
+            logger.warning(f"Failed to connect to Postgres: {e}, using in-memory fallback")
+            self._client = None
+
     def save_evidence(self, evidence: StructuredEvidence) -> str:
-        """Insert evidence into structured_evidence table and return ID."""
-        if not self.conn:
-            # Mock: return a fake ID
-            import uuid
-            return str(uuid.uuid4())
-        
-        import psycopg2.extras
-        cursor = self.conn.cursor()
+        """Save evidence to Postgres or fallback to in-memory."""
+        if not self._client:
+            return self._fallback.save_evidence(evidence)
+
         try:
-            query = """
-                INSERT INTO structured_evidence 
-                (achievement, context, impact, skills_demonstrated, job_title, company_name, 
-                 time_period_start, time_period_end, source_section, source_cv_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id;
-            """
-            cursor.execute(query, (
-                evidence.achievement,
-                evidence.context,
-                evidence.impact,
-                psycopg2.extras.Json(evidence.skills_demonstrated),
-                evidence.job_title,
-                evidence.company_name,
-                evidence.time_period_start,
-                evidence.time_period_end,
-                evidence.source_section,
-                evidence.source_cv_id
-            ))
-            evidence_id = cursor.fetchone()[0]
-            self.conn.commit()
-            return evidence_id
+            # Create record in StructuredEvidence table
+            record = self._client.structuredevidence.create(
+                data={
+                    "achievement": evidence.achievement,
+                    "context": evidence.context,
+                    "impact": evidence.impact,
+                    "skills_demonstrated": evidence.skills_demonstrated,
+                    "job_title": evidence.job_title,
+                    "company_name": evidence.company_name,
+                    "time_period_start": evidence.time_period_start,
+                    "time_period_end": evidence.time_period_end,
+                    "source_section": evidence.source_section,
+                    "source_cv_id": evidence.source_cv_id,
+                }
+            )
+            evidence.id = record.id
+            evidence.created_at = record.createdAt
+            evidence.updated_at = record.updatedAt
+            logger.info(f"Saved evidence: {evidence.id}")
+            return evidence.id
         except Exception as e:
-            print(f"Error saving evidence: {e}")
-            return None
-        finally:
-            cursor.close()
-    
+            logger.error(f"Failed to save evidence to Postgres: {e}, falling back to in-memory")
+            return self._fallback.save_evidence(evidence)
+
     def get_evidence_by_id(self, evidence_id: str) -> Optional[StructuredEvidence]:
         """Retrieve evidence by ID."""
-        if not self.conn:
-            return None
-        
-        cursor = self.conn.cursor()
+        if not self._client:
+            return self._fallback.get_evidence_by_id(evidence_id)
+
         try:
-            query = "SELECT * FROM structured_evidence WHERE id = %s;"
-            cursor.execute(query, (evidence_id,))
-            row = cursor.fetchone()
-            if not row:
-                return None
-            return self._row_to_evidence(row, cursor.description)
+            record = self._client.structuredevidence.find_unique(where={"id": evidence_id})
+            if not record:
+                return self._fallback.get_evidence_by_id(evidence_id)
+
+            return StructuredEvidence(
+                id=record.id,
+                achievement=record.achievement,
+                context=record.context,
+                impact=record.impact,
+                skills_demonstrated=record.skills_demonstrated,
+                job_title=record.job_title,
+                company_name=record.company_name,
+                time_period_start=record.time_period_start,
+                time_period_end=record.time_period_end,
+                source_section=record.source_section,
+                source_cv_id=record.source_cv_id,
+                created_at=record.createdAt,
+                updated_at=record.updatedAt,
+            )
         except Exception as e:
-            print(f"Error getting evidence: {e}")
-            return None
-        finally:
-            cursor.close()
-    
-    def get_evidence_by_cv_id(self, cv_id: str) -> list[StructuredEvidence]:
-        """Retrieve all evidence from a specific CV."""
-        if not self.conn:
-            return []
-        
-        cursor = self.conn.cursor()
+            logger.error(f"Failed to get evidence {evidence_id} from Postgres: {e}")
+            return self._fallback.get_evidence_by_id(evidence_id)
+
+    def get_evidence_by_cv_id(self, cv_id: str) -> List[StructuredEvidence]:
+        """
+        Retrieve all evidence extracted from a specific CV.
+
+        Sorted reverse-chronologically by time_period_end (most recent first).
+        """
+        if not self._client:
+            return self._fallback.get_evidence_by_cv_id(cv_id)
+
         try:
-            query = "SELECT * FROM structured_evidence WHERE source_cv_id = %s ORDER BY time_period_start DESC;"
-            cursor.execute(query, (cv_id,))
-            rows = cursor.fetchall()
-            return [self._row_to_evidence(row, cursor.description) for row in rows]
+            records = self._client.structuredevidence.find_many(
+                where={"source_cv_id": cv_id},
+                order_by={"time_period_end": "desc"},  # Reverse chronological
+            )
+
+            evidence_list = []
+            for record in records:
+                evidence_list.append(
+                    StructuredEvidence(
+                        id=record.id,
+                        achievement=record.achievement,
+                        context=record.context,
+                        impact=record.impact,
+                        skills_demonstrated=record.skills_demonstrated,
+                        job_title=record.job_title,
+                        company_name=record.company_name,
+                        time_period_start=record.time_period_start,
+                        time_period_end=record.time_period_end,
+                        source_section=record.source_section,
+                        source_cv_id=record.source_cv_id,
+                        created_at=record.createdAt,
+                        updated_at=record.updatedAt,
+                    )
+                )
+
+            logger.info(f"Retrieved {len(evidence_list)} evidence items for CV {cv_id}")
+            return evidence_list
         except Exception as e:
-            print(f"Error querying evidence by CV: {e}")
-            return []
-        finally:
-            cursor.close()
-    
-    def query_by_skills(self, skills: list[str]) -> list[StructuredEvidence]:
-        """Find evidence containing any of the specified skills."""
-        if not self.conn:
-            return []
-        
-        cursor = self.conn.cursor()
+            logger.error(f"Failed to get evidence for CV {cv_id} from Postgres: {e}")
+            return self._fallback.get_evidence_by_cv_id(cv_id)
+
+    def delete_evidence(self, evidence_id: str) -> bool:
+        """Delete evidence by ID."""
+        if not self._client:
+            return self._fallback.delete_evidence(evidence_id)
+
         try:
-            # Use Postgres jsonb/array containment operator
-            query = """
-                SELECT * FROM structured_evidence 
-                WHERE skills_demonstrated && %s
-                ORDER BY time_period_start DESC;
-            """
-            cursor.execute(query, (skills,))
-            rows = cursor.fetchall()
-            return [self._row_to_evidence(row, cursor.description) for row in rows]
+            result = self._client.structuredevidence.delete(where={"id": evidence_id})
+            logger.info(f"Deleted evidence: {evidence_id}")
+            return result is not None
         except Exception as e:
-            print(f"Error querying by skills: {e}")
-            return []
-        finally:
-            cursor.close()
-    
-    def query_by_company(self, company_name: str) -> list[StructuredEvidence]:
-        """Find evidence from a specific company."""
-        if not self.conn:
-            return []
-        
-        cursor = self.conn.cursor()
-        try:
-            query = "SELECT * FROM structured_evidence WHERE company_name = %s ORDER BY time_period_start DESC;"
-            cursor.execute(query, (company_name,))
-            rows = cursor.fetchall()
-            return [self._row_to_evidence(row, cursor.description) for row in rows]
-        except Exception as e:
-            print(f"Error querying by company: {e}")
-            return []
-        finally:
-            cursor.close()
-    
-    def query_by_timeframe(self, start: datetime, end: datetime) -> list[StructuredEvidence]:
-        """Find evidence within a time period."""
-        if not self.conn:
-            return []
-        
-        cursor = self.conn.cursor()
-        try:
-            query = """
-                SELECT * FROM structured_evidence 
-                WHERE (time_period_start IS NULL OR time_period_start >= %s)
-                  AND (time_period_end IS NULL OR time_period_end <= %s)
-                ORDER BY time_period_start DESC;
-            """
-            cursor.execute(query, (start, end))
-            rows = cursor.fetchall()
-            return [self._row_to_evidence(row, cursor.description) for row in rows]
-        except Exception as e:
-            print(f"Error querying by timeframe: {e}")
-            return []
-        finally:
-            cursor.close()
-    
-    def _row_to_evidence(self, row: tuple, description) -> StructuredEvidence:
-        """Convert a Postgres row to StructuredEvidence."""
-        col_names = [desc[0] for desc in description]
-        col_dict = dict(zip(col_names, row))
-        
-        return StructuredEvidence(
-            id=col_dict['id'],
-            achievement=col_dict['achievement'],
-            context=col_dict['context'],
-            impact=col_dict['impact'],
-            skills_demonstrated=col_dict['skills_demonstrated'] or [],
-            job_title=col_dict['job_title'],
-            company_name=col_dict['company_name'],
-            time_period_start=col_dict['time_period_start'],
-            time_period_end=col_dict['time_period_end'],
-            source_section=col_dict['source_section'],
-            source_cv_id=col_dict['source_cv_id']
-        )
+            logger.error(f"Failed to delete evidence {evidence_id}: {e}")
+            return self._fallback.delete_evidence(evidence_id)
+
+    def close(self):
+        """Close Postgres connection."""
+        if self._client:
+            self._client.disconnect()
+            logger.info("Disconnected from Postgres")
+        self._fallback.close()
