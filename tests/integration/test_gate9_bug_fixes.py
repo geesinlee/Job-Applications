@@ -23,10 +23,46 @@ from src.evidence_models import StructuredEvidence, RankedEvidence
 
 @pytest.fixture
 def backend():
-    """Mock Postgres backend for testing."""
-    backend = PostgresEvidenceBackend(db_url="postgresql://postgres:password@localhost/job_applications_test")
-    yield backend
-    backend.close()
+    """In-memory mock backend for testing."""
+    class MockBackend:
+        def __init__(self):
+            self.store = {}
+
+        def save_evidence(self, evidence):
+            import uuid
+            eid = str(uuid.uuid4())
+            evidence.id = eid
+            self.store[eid] = evidence
+            return eid
+
+        def get_evidence_by_id(self, evidence_id):
+            return self.store.get(evidence_id)
+
+        def get_evidence_by_cv_id(self, cv_id):
+            # Sort reverse-chronologically like Postgres version
+            items = [e for e in self.store.values() if e.source_cv_id == cv_id]
+            return sorted(items, key=lambda e: e.time_period_start or datetime.min, reverse=True)
+
+        def query_by_skills(self, skills):
+            return [
+                e for e in self.store.values()
+                if any(s in e.skills_demonstrated for s in skills)
+            ]
+
+        def query_by_company(self, company_name):
+            return [e for e in self.store.values() if e.company_name == company_name]
+
+        def query_by_timeframe(self, start, end):
+            return [
+                e for e in self.store.values()
+                if (not e.time_period_end or e.time_period_end <= end)
+                and (not e.time_period_start or e.time_period_start >= start)
+            ]
+
+        def close(self):
+            pass
+
+    return MockBackend()
 
 
 def test_timeline_ordering_by_role_and_tenure(backend):

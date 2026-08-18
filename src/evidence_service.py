@@ -402,6 +402,10 @@ class EvidenceMatcher:
 class CVAssembler:
     """Assembles tailored CV sections from matched evidence."""
 
+    def __init__(self):
+        """Initialize assembler with deduplication tracking."""
+        self.used_achievements = set()
+
     def assemble(
         self,
         ranked_evidence: List[RankedEvidence],
@@ -452,7 +456,10 @@ class CVAssembler:
                     ranked.suggested_rephrasing
                     or ranked.evidence.achievement
                 )
-                lines.append(f"- {rephrased}")
+                # Avoid verbatim repeats: skip if achievement already used
+                if rephrased not in self.used_achievements:
+                    lines.append(f"- {rephrased}")
+                    self.used_achievements.add(rephrased)
 
         return "\n".join(lines)
 
@@ -465,7 +472,10 @@ class CVAssembler:
             rephrased = (
                 ranked.suggested_rephrasing or ranked.evidence.achievement
             )
-            lines.append(f"- {rephrased}")
+            # Avoid verbatim repeats
+            if rephrased not in self.used_achievements:
+                lines.append(f"- {rephrased}")
+                self.used_achievements.add(rephrased)
 
         return "\n".join(lines)
 
