@@ -14,8 +14,10 @@ tracker.json and profile.json live on pi-4 local disk, rsynced to NAS
 after every write.
 """
 
+import asyncio
 import difflib
 import json
+import logging
 import os
 import re
 import shutil
@@ -56,6 +58,10 @@ from src.evidence_backend import PostgresEvidenceBackend, InMemoryEvidenceBacken
 from src.workflow_tools import WorkflowTools
 
 __version__ = "0.3.0"
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # ---------------------------------------------------------------------------
 # Configuration — env vars with __file__-relative fallbacks
@@ -432,8 +438,33 @@ else:
     mcp = FastMCP("job-applications")
 
 
+# Initialize Gate 10 Workflow Tools backend
+async def _init_workflow_backend():
+    """Initialize evidence backend (Postgres in production, in-memory fallback).
+
+    Attempts to connect to PostgreSQL if DATABASE_URL is set and points to a
+    PostgreSQL server. Falls back to in-memory backend if connection fails.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    if db_url and db_url.startswith("postgresql://"):
+        try:
+            logger.info("Initializing PostgreSQL evidence backend...")
+            backend = PostgresEvidenceBackend(db_url)
+            logger.info("PostgreSQL backend initialized successfully")
+            return backend
+        except Exception as e:
+            logger.warning(f"PostgreSQL backend failed, using in-memory: {e}")
+    else:
+        if db_url:
+            logger.info(f"DATABASE_URL is set but not PostgreSQL: {db_url[:20]}...")
+        else:
+            logger.info("DATABASE_URL not set, using in-memory backend")
+
+    return InMemoryEvidenceBackend()
+
+
 # Initialize Gate 10 Workflow Tools
-_workflow_backend = InMemoryEvidenceBackend()
+_workflow_backend = asyncio.run(_init_workflow_backend())
 _workflow_tools = WorkflowTools(backend=_workflow_backend)
 
 

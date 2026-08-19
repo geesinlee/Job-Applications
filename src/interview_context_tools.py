@@ -13,8 +13,16 @@ import asyncio
 
 from prisma import Prisma
 
-# Initialize Prisma (assumes DATABASE_URL env var is set)
-db = Prisma()
+# Lazy-load Prisma client on first use
+_db = None
+
+async def _get_db():
+    """Lazy-load Prisma client on first use."""
+    global _db
+    if _db is None:
+        _db = Prisma()
+        await _db.connect()
+    return _db
 
 
 async def log_interview_context(
@@ -47,7 +55,7 @@ async def log_interview_context(
         }
     """
     try:
-        await db.connect()
+        db = await _get_db()
 
         # Get application + folder path
         app = await db.application.find_unique(where={"id": application_id})
@@ -136,8 +144,6 @@ async def log_interview_context(
 
     except Exception as e:
         return {"error": f"Failed to log interview context: {e}"}
-    finally:
-        await db.disconnect()
 
 
 def _extract_interview_metadata(transcript: str) -> dict:
@@ -220,7 +226,7 @@ async def get_interview_context(
         InterviewContext record or error
     """
     try:
-        await db.connect()
+        db = await _get_db()
 
         context = await db.interviewcontext.find_first(
             where={
@@ -248,8 +254,6 @@ async def get_interview_context(
 
     except Exception as e:
         return {"error": f"Failed to retrieve interview context: {e}"}
-    finally:
-        await db.disconnect()
 
 
 async def list_interview_contexts(application_id: str) -> dict:
@@ -262,7 +266,7 @@ async def list_interview_contexts(application_id: str) -> dict:
         List of InterviewContext records
     """
     try:
-        await db.connect()
+        db = await _get_db()
 
         contexts = await db.interviewcontext.find_many(
             where={"applicationId": application_id},
@@ -285,8 +289,6 @@ async def list_interview_contexts(application_id: str) -> dict:
 
     except Exception as e:
         return {"error": f"Failed to list interview contexts: {e}"}
-    finally:
-        await db.disconnect()
 
 
 # Async entry points for MCP integration
