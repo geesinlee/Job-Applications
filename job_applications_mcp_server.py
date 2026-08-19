@@ -3322,6 +3322,122 @@ def ingest_from_discovery(company: str, date: str) -> dict:
 
 
 # ============================================================================
+# CV File Access Tools (support for Gate 10 remote workflow)
+# ============================================================================
+
+@mcp.tool()
+def get_base_cv() -> dict:
+    """Retrieve the base/reference CV content for CV generation.
+
+    Returns the master CV used as source for tailoring. Required by Gate 10
+    workflow tools when Claude Desktop (remote) needs to access CV content.
+
+    Returns:
+        dict with cv_content (markdown text) and cv_path
+    """
+    try:
+        if not BASE_CV_PATH.exists():
+            return {
+                "error": "base_cv_not_found",
+                "path": str(BASE_CV_PATH),
+                "hint": "Set JOB_APP_BASE_CV_PATH environment variable to a valid CV file path"
+            }
+        content = BASE_CV_PATH.read_text(encoding="utf-8")
+        return {
+            "ok": True,
+            "cv_path": str(BASE_CV_PATH),
+            "cv_content": content,
+            "content_length": len(content)
+        }
+    except Exception as e:
+        return {"error": str(e), "cv_path": str(BASE_CV_PATH)}
+
+
+@mcp.tool()
+def get_reference_cv() -> dict:
+    """Retrieve the reference CV content used for keyword pre-filtering.
+
+    Returns the CV used to filter incoming job opportunities. May differ
+    from the base CV if it's been updated separately.
+
+    Returns:
+        dict with cv_content (markdown text) and cv_path
+    """
+    ref_cv_path = Path(os.environ.get(
+        "JOB_APP_REFERENCE_CV_PATH",
+        str(ARTEFACTS_DIR / "Base CV" / "Reference_CV.md")
+    ))
+    try:
+        if not ref_cv_path.exists():
+            return {
+                "error": "reference_cv_not_found",
+                "path": str(ref_cv_path),
+                "hint": "Set JOB_APP_REFERENCE_CV_PATH to a valid CV file path"
+            }
+        content = ref_cv_path.read_text(encoding="utf-8")
+        return {
+            "ok": True,
+            "cv_path": str(ref_cv_path),
+            "cv_content": content,
+            "content_length": len(content)
+        }
+    except Exception as e:
+        return {"error": str(e), "cv_path": str(ref_cv_path)}
+
+
+@mcp.tool()
+def save_tailored_cv(company: str, role_title: str, cv_content: str) -> dict:
+    """Save a tailored CV to the company application folder.
+
+    Stores the generated/tailored CV in the company folder for the role,
+    and optionally generates a Word doc version for direct use.
+
+    Args:
+        company: Target employer name (e.g., 'Gartner')
+        role_title: Role title
+        cv_content: Full CV content (markdown or formatted text)
+
+    Returns:
+        dict with saved_path and word_doc_path (if convertible)
+    """
+    tracker = _load_tracker()
+    try:
+        company_dir = _resolve_company_folder(company, role_title, tracker)
+    except AmbiguousRoleError as e:
+        return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
+
+    company_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save as markdown
+    md_path = company_dir / f"CV_{role_title.replace(' ', '_')}_tailored.md"
+    md_path.write_text(cv_content, encoding="utf-8")
+
+    result = {
+        "ok": True,
+        "company": company,
+        "role_title": role_title,
+        "cv_path": str(md_path),
+        "content_length": len(cv_content)
+    }
+
+    # Try to generate Word doc as well (if pandoc available)
+    try:
+        docx_path = company_dir / f"CV_{role_title.replace(' ', '_')}_tailored.docx"
+        subprocess.run(
+            ["pandoc", str(md_path), "-o", str(docx_path)],
+            check=True,
+            capture_output=True,
+            timeout=10
+        )
+        result["docx_path"] = str(docx_path)
+    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
+        # pandoc not available or failed; continue without it
+        pass
+
+    return result
+
+
+# ============================================================================
 # Gate 9: Evidence-based CV Generation via LLM (Task 10)
 # ============================================================================
 
