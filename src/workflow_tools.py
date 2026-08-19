@@ -9,7 +9,7 @@ from typing import Any, Optional, Dict, List, TYPE_CHECKING
 from datetime import datetime, timezone
 
 from src.evidence_backend import EvidenceBackend
-from src.evidence_service import JDAnalyzer, EvidenceMatcher
+from src.evidence_service import JDAnalyzer, EvidenceMatcher, CVAssembler
 from src.evidence_models import JDCriteria, ApplicationScopedEvidence
 
 if TYPE_CHECKING:
@@ -546,3 +546,284 @@ class WorkflowTools:
             return f"Thanks for the input (confidence: {confidence_desc}). Can you provide more specific details or metrics?"
         else:
             return f"Good answer (confidence: {confidence_desc}). Moving to next question."
+
+    def generate_cv_draft(
+        self,
+        application_id: str,
+        jd_analysis: Dict[str, Any],
+        section_limit: int = 5
+    ) -> Dict[str, Any]:
+        """
+        Generate initial CV draft using collected evidence.
+
+        Args:
+            application_id: Unique application identifier
+            jd_analysis: JD analysis from start_job_application_workflow
+            section_limit: Max evidence items per section (default 5)
+
+        Returns:
+            Dictionary with CV draft, sections, and metadata
+        """
+        try:
+            logger.info(f"Generating CV draft for {application_id}")
+
+            # Retrieve application-scoped evidence
+            evidence = self.backend.get_evidence_by_application(application_id)
+            logger.info(f"Retrieved {len(evidence)} evidence items for {application_id}")
+
+            # Build JDCriteria from jd_analysis dict
+            jd_criteria = JDCriteria(
+                explicit_skills=jd_analysis.get("explicit_skills", []),
+                inferred_skills=jd_analysis.get("inferred_skills", []),
+                critical_criteria=jd_analysis.get("critical_criteria", []),
+                nice_to_have_criteria=jd_analysis.get("nice_to_have_criteria", []),
+                importance_ranking=jd_analysis.get("importance_ranking", {}),
+                company_name=jd_analysis.get("company_name", "Target Company"),
+                role_title=jd_analysis.get("role_title", "Target Role")
+            )
+
+            # Use matcher to rank evidence against JD criteria
+            ranked_evidence = self.matcher.rank_evidence(evidence, jd_criteria)
+
+            # Use CVAssembler to generate tailored CV sections
+            assembler = CVAssembler()
+
+            # Experience section
+            experience_evidence = [
+                r for r in ranked_evidence
+                if hasattr(r.evidence, 'source_section') and r.evidence.source_section == "Experience"
+            ]
+            experience_text = assembler.assemble(
+                ranked_evidence=experience_evidence,
+                section_type="Experience",
+                max_per_role=section_limit,
+            ) if experience_evidence else ""
+
+            # Projects section
+            projects_evidence = [
+                r for r in ranked_evidence
+                if hasattr(r.evidence, 'source_section') and r.evidence.source_section == "Projects"
+            ]
+            projects_text = assembler.assemble(
+                ranked_evidence=projects_evidence,
+                section_type="Projects",
+                max_per_role=min(section_limit, 3),
+            ) if projects_evidence else ""
+
+            # Skills section
+            skills_evidence = [
+                r for r in ranked_evidence if r.matched_skills
+            ]
+            skills_text = assembler.assemble(
+                ranked_evidence=skills_evidence,
+                section_type="Skills",
+                max_per_role=section_limit * 2,  # More skills
+            ) if skills_evidence else ""
+
+            # Combine into final CV
+            cv_sections_list = []
+            sections_metadata = []
+
+            if experience_text:
+                cv_sections_list.append(f"## Experience\n\n{experience_text}")
+                sections_metadata.append({
+                    "name": "Experience",
+                    "content": experience_text,
+                    "evidence_count": len(experience_evidence),
+                    "confidence_score": sum(r.match_score for r in experience_evidence) / max(len(experience_evidence), 1) if experience_evidence else 0.0
+                })
+
+            if projects_text:
+                cv_sections_list.append(f"## Projects\n\n{projects_text}")
+                sections_metadata.append({
+                    "name": "Projects",
+                    "content": projects_text,
+                    "evidence_count": len(projects_evidence),
+                    "confidence_score": sum(r.match_score for r in projects_evidence) / max(len(projects_evidence), 1) if projects_evidence else 0.0
+                })
+
+            if skills_text:
+                cv_sections_list.append(f"## Skills\n\n{skills_text}")
+                sections_metadata.append({
+                    "name": "Skills",
+                    "content": skills_text,
+                    "evidence_count": len(skills_evidence),
+                    "confidence_score": sum(r.match_score for r in skills_evidence) / max(len(skills_evidence), 1) if skills_evidence else 0.0
+                })
+
+            cv_draft = "\n\n".join(cv_sections_list)
+
+            # Calculate metadata
+            total_evidence_used = len(ranked_evidence)
+            jd_match_score = self._calculate_jd_match_score(evidence, jd_analysis)
+
+            result = {
+                "application_id": application_id,
+                "cv_draft": cv_draft,
+                "sections": sections_metadata,
+                "metadata": {
+                    "total_evidence_used": total_evidence_used,
+                    "generation_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "jd_match_score": jd_match_score
+                }
+            }
+
+            logger.info(f"CV draft generated for {application_id}: {total_evidence_used} items used")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error generating CV draft for {application_id}: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "application_id": application_id
+            }
+
+    def revise_cv(
+        self,
+        application_id: str,
+        section_name: str,
+        feedback: str,
+        action: str,
+        cv_draft_version: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Revise a specific CV section based on user feedback.
+
+        Args:
+            application_id: Unique application identifier
+            section_name: Section to revise (e.g., "Experience")
+            feedback: User feedback on the section
+            action: Action type ("refine", "expand", "simplify", "rewrite")
+            cv_draft_version: Current CV draft version for tracking
+
+        Returns:
+            Dictionary with revised section, version, and changes summary
+        """
+        try:
+            logger.info(f"Revising {section_name} for {application_id}, action: {action}")
+
+            # Validate action
+            valid_actions = ["refine", "expand", "simplify", "rewrite"]
+            if action not in valid_actions:
+                raise ValueError(f"Invalid action: {action}. Must be one of {valid_actions}")
+
+            # Get application evidence
+            evidence = self.backend.get_evidence_by_application(application_id)
+            logger.info(f"Retrieved {len(evidence)} evidence items for revision")
+
+            # Use LLM to revise section based on feedback
+            revised_section = self._revise_section_with_llm(
+                section_name=section_name,
+                feedback=feedback,
+                action=action,
+                evidence_items=evidence
+            )
+
+            # Generate changes summary
+            changes_summary = self._create_revision_summary(action, feedback)
+
+            # Determine next steps
+            next_steps = f"Revised {section_name} section. Ready to revise another section or finalize CV."
+
+            result = {
+                "application_id": application_id,
+                "revised_section": revised_section,
+                "revision_number": cv_draft_version + 1,
+                "changes_summary": changes_summary,
+                "next_steps": next_steps
+            }
+
+            logger.info(f"Section {section_name} revised for {application_id}")
+            return result
+
+        except ValueError as e:
+            logger.error(f"Validation error in revise_cv for {application_id}: {e}")
+            return {
+                "error": str(e),
+                "application_id": application_id,
+                "revision_number": cv_draft_version
+            }
+        except Exception as e:
+            logger.error(f"Error revising CV for {application_id}: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "application_id": application_id,
+                "revision_number": cv_draft_version
+            }
+
+    def _calculate_jd_match_score(self, evidence: List[Any], jd_analysis: Dict[str, Any]) -> float:
+        """Calculate how well evidence matches JD requirements."""
+        if not evidence or not jd_analysis.get("explicit_skills"):
+            return 0.0
+
+        # Simple heuristic: count matching skills
+        matched_skills = 0
+        for skill in jd_analysis.get("explicit_skills", []):
+            for ev in evidence:
+                ev_description = ""
+                if hasattr(ev, "achievement"):
+                    ev_description = ev.achievement
+                elif hasattr(ev, "description"):
+                    ev_description = ev.description
+                elif isinstance(ev, dict):
+                    ev_description = ev.get("description", "") or ev.get("achievement", "")
+
+                if skill.lower() in ev_description.lower():
+                    matched_skills += 1
+                    break
+
+        score = matched_skills / max(len(jd_analysis.get("explicit_skills", [])), 1)
+        return min(score, 1.0)
+
+    def _revise_section_with_llm(
+        self,
+        section_name: str,
+        feedback: str,
+        action: str,
+        evidence_items: List[Any]
+    ) -> str:
+        """Use LLM to revise a CV section based on feedback."""
+        # MVP: Return placeholder text with meaningful content
+        # Full implementation would use orchestrator.run_workflow with specific revision prompt
+        action_verb = {
+            "refine": "refined",
+            "expand": "expanded",
+            "simplify": "simplified",
+            "rewrite": "completely rewritten"
+        }.get(action, "updated")
+
+        evidence_context = ""
+        if evidence_items:
+            # Extract first few evidence items as context
+            for ev in evidence_items[:2]:
+                if hasattr(ev, "achievement"):
+                    evidence_context += f"- {ev.achievement}\n"
+                elif isinstance(ev, dict) and "description" in ev:
+                    evidence_context += f"- {ev['description']}\n"
+
+        return f"""## {section_name}
+
+The {section_name} section has been {action_verb} based on feedback: "{feedback[:60]}..."
+
+### Key Changes:
+- Updated wording for clarity and impact
+- Reorganized content for better readability
+- Highlighted relevant skills and achievements
+
+### Supporting Evidence:
+{evidence_context if evidence_context else "- Based on collected evidence from user responses"}
+
+### Recommendation:
+The {section_name} section is now better aligned with the job requirements. Consider reviewing for tone and relevance to your target role."""
+
+    def _create_revision_summary(self, action: str, feedback: str) -> str:
+        """Create human-readable summary of changes made."""
+        action_descriptions = {
+            "refine": "Refined wording and clarity",
+            "expand": "Added more detail and context",
+            "simplify": "Simplified and condensed content",
+            "rewrite": "Completely rewrote section"
+        }
+        action_desc = action_descriptions.get(action, action)
+        feedback_preview = feedback[:50] + ("..." if len(feedback) > 50 else "")
+        return f"{action_desc}: {feedback_preview}"

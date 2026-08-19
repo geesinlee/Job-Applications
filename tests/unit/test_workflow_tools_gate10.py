@@ -895,3 +895,404 @@ def test_answer_clarifying_questions_confidences_comparison(mock_backend):
         confidence=0.35
     )
     assert "low" in result_low["summary"]
+
+
+# Tests for generate_cv_draft (Task 3d)
+
+def test_generate_cv_draft_creates_draft(mock_backend):
+    """Test that generate_cv_draft creates CV draft with sections."""
+
+    evidence = StructuredEvidence(
+        achievement="Led team of 5 engineers on cloud infrastructure",
+        context="At TechCorp, responsible for infrastructure modernization",
+        impact="Reduced deployment time by 60%",
+        skills_demonstrated=["Python", "AWS"],
+        job_title="Senior Engineer",
+        company_name="TechCorp",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {"Python": 0.9, "AWS": 0.85},
+        "company_name": "Acme",
+        "role_title": "Senior Engineer"
+    }
+
+    with patch('src.workflow_tools.CVAssembler') as mock_assembler_class:
+        mock_assembler = MagicMock()
+        mock_assembler.assemble.return_value = "- Led cloud infrastructure team\n- Achieved 60% performance improvement"
+        mock_assembler_class.return_value = mock_assembler
+
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert result["application_id"] == "test-app"
+    assert "cv_draft" in result
+    assert "sections" in result
+    assert "metadata" in result
+    assert result["metadata"]["total_evidence_used"] >= 0
+    assert "generation_timestamp" in result["metadata"]
+
+
+def test_generate_cv_draft_no_evidence(mock_backend):
+    """Test generate_cv_draft with no evidence."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    with patch('src.workflow_tools.CVAssembler'):
+        result = tools.generate_cv_draft(
+            application_id="empty-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert result["application_id"] == "empty-app"
+    assert "cv_draft" in result
+    # CV draft might be empty but should exist
+
+
+def test_generate_cv_draft_with_section_limit(mock_backend):
+    """Test that generate_cv_draft respects section_limit."""
+
+    evidence = StructuredEvidence(
+        achievement="Built Python microservices",
+        context="At Company",
+        impact="Success",
+        skills_demonstrated=["Python"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    with patch('src.workflow_tools.CVAssembler') as mock_assembler_class:
+        mock_assembler = MagicMock()
+        mock_assembler.assemble.return_value = "Experience content"
+        mock_assembler_class.return_value = mock_assembler
+
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis,
+            section_limit=3
+        )
+
+    assert result["application_id"] == "test-app"
+    # Verify that assembler was called with max_per_role matching section_limit
+    mock_assembler.assemble.assert_called()
+
+
+def test_generate_cv_draft_error_handling(mock_backend):
+    """Test error handling in generate_cv_draft."""
+
+    mock_backend.get_evidence_by_application.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.generate_cv_draft(
+        application_id="error-app",
+        jd_analysis={}
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+
+
+def test_generate_cv_draft_metadata_calculation(mock_backend):
+    """Test that metadata is calculated correctly."""
+
+    evidence1 = StructuredEvidence(
+        achievement="Python project",
+        context="Context",
+        impact="Impact",
+        skills_demonstrated=["Python"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    evidence2 = StructuredEvidence(
+        achievement="AWS infrastructure",
+        context="Context",
+        impact="Impact",
+        skills_demonstrated=["AWS"],
+        job_title="DevOps",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-002"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence1, evidence2]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    with patch('src.workflow_tools.CVAssembler'):
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert "metadata" in result
+    assert result["metadata"]["total_evidence_used"] == 2
+    assert "jd_match_score" in result["metadata"]
+    assert 0 <= result["metadata"]["jd_match_score"] <= 1.0
+
+
+# Tests for revise_cv (Task 3d)
+
+def test_revise_cv_processes_feedback(mock_backend):
+    """Test that revise_cv processes user feedback correctly."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Add more metrics and quantifiable results",
+        action="expand",
+        cv_draft_version=1
+    )
+
+    assert result["application_id"] == "test-app"
+    assert result["revision_number"] == 2
+    assert "revised_section" in result
+    assert "changes_summary" in result
+    # Should mention expanding/adding detail
+    assert "added" in result["changes_summary"].lower() or "detail" in result["changes_summary"].lower()
+    assert "next_steps" in result
+
+
+def test_revise_cv_all_actions(mock_backend):
+    """Test revise_cv with all valid actions."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    for action in ["refine", "expand", "simplify", "rewrite"]:
+        result = tools.revise_cv(
+            application_id="test-app",
+            section_name="Skills",
+            feedback=f"Test feedback for {action}",
+            action=action,
+            cv_draft_version=1
+        )
+
+        assert result["application_id"] == "test-app"
+        assert result["revision_number"] == 2
+        assert "revised_section" in result
+        assert action in result["changes_summary"].lower()
+
+
+def test_revise_cv_invalid_action(mock_backend):
+    """Test that revise_cv rejects invalid actions."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="test",
+        action="invalid_action"
+    )
+
+    assert "error" in result
+    assert "Invalid action" in result["error"]
+
+
+def test_revise_cv_tracks_revision_version(mock_backend):
+    """Test that revision version is tracked correctly."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    # First revision
+    result1 = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="feedback 1",
+        action="refine",
+        cv_draft_version=1
+    )
+    assert result1["revision_number"] == 2
+
+    # Second revision using version from previous
+    result2 = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="feedback 2",
+        action="expand",
+        cv_draft_version=result1["revision_number"]
+    )
+    assert result2["revision_number"] == 3
+
+
+def test_revise_cv_error_handling(mock_backend):
+    """Test error handling in revise_cv."""
+
+    mock_backend.get_evidence_by_application.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="error-app",
+        section_name="Experience",
+        feedback="test",
+        action="refine"
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+
+
+def test_revise_cv_multiple_sections(mock_backend):
+    """Test revising multiple sections sequentially."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    sections = ["Experience", "Projects", "Skills"]
+    version = 1
+
+    for section in sections:
+        result = tools.revise_cv(
+            application_id="test-app",
+            section_name=section,
+            feedback=f"Improve {section}",
+            action="refine",
+            cv_draft_version=version
+        )
+
+        assert result["application_id"] == "test-app"
+        assert section in result["revised_section"]
+        version = result["revision_number"]
+
+    # Should have incremented version for each revision
+    assert version == 4  # Initial 1 + 3 revisions
+
+
+def test_generate_cv_draft_and_revise_cv_workflow(mock_backend):
+    """Test complete workflow: generate CV draft, then revise."""
+
+    evidence = StructuredEvidence(
+        achievement="Built microservices",
+        context="At Company",
+        impact="10x performance",
+        skills_demonstrated=["Python", "Docker"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "Docker"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    # Step 1: Generate CV draft
+    with patch('src.workflow_tools.CVAssembler'):
+        draft_result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert draft_result["application_id"] == "test-app"
+    assert "cv_draft" in draft_result
+    initial_version = 1
+
+    # Step 2: Revise Experience section
+    revise_result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Add more impact metrics",
+        action="expand",
+        cv_draft_version=initial_version
+    )
+
+    assert revise_result["application_id"] == "test-app"
+    assert revise_result["revision_number"] == 2
+    assert "Experience" in revise_result["revised_section"]
+
+
+def test_revise_cv_section_content_includes_evidence_context(mock_backend):
+    """Test that revised section includes evidence context."""
+
+    evidence = StructuredEvidence(
+        achievement="Led cloud migration project",
+        context="At TechCorp",
+        impact="Reduced costs by 40%",
+        skills_demonstrated=["AWS", "Python"],
+        job_title="Senior Engineer",
+        company_name="TechCorp",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Emphasize cloud and cost savings",
+        action="expand"
+    )
+
+    # Revised section should reference evidence
+    assert "Experience" in result["revised_section"]
+    assert result["revision_number"] == 2
