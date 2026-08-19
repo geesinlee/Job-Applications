@@ -63,9 +63,12 @@ def _parse_json_response(response_text: str):
 class EvidenceExtractor:
     """Extracts structured evidence from CV sections using LLM."""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
+    def __init__(self, model: str = None):
         """Initialize with LLM model."""
-        self.model = model or os.getenv("EVIDENCE_LLM_MODEL", "claude-haiku-4-5-20251001")
+        if model is None:
+            self.model = os.getenv("EVIDENCE_LLM_MODEL", "claude-haiku-4-5-20251001")
+        else:
+            self.model = model
         if anthropic:
             self.client = anthropic.Anthropic()
         else:
@@ -200,9 +203,12 @@ Return ONLY the JSON array, no other text.
 class JDAnalyzer:
     """Analyzes job descriptions and extracts criteria using LLM."""
 
-    def __init__(self, model: str = "claude-haiku-4-5-20251001"):
+    def __init__(self, model: str = None):
         """Initialize with LLM model."""
-        self.model = model or os.getenv("JD_ANALYZER_LLM_MODEL", "claude-haiku-4-5-20251001")
+        if model is None:
+            self.model = os.getenv("JD_ANALYZER_LLM_MODEL", "claude-haiku-4-5-20251001")
+        else:
+            self.model = model
         if anthropic:
             self.client = anthropic.Anthropic()
         else:
