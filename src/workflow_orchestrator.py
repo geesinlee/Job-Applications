@@ -1,6 +1,8 @@
 """LangChain workflow orchestrator for Gate 10 interactive evidence discovery."""
 
-from typing import Any, Optional
+from __future__ import annotations
+
+from typing import Any, Optional, Dict
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.tools import StructuredTool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -70,7 +72,7 @@ Available tools: {tool_names}
             prompt
         )
 
-    def run_workflow(self, task: str) -> dict:
+    def run_workflow(self, task: str) -> Dict:
         """
         Execute a workflow step and return results.
 
@@ -78,7 +80,7 @@ Available tools: {tool_names}
             task: Task description/prompt for the workflow agent.
 
         Returns:
-            dict: Result dict containing agent output or error info.
+            Dict: Result dict containing agent output or error info.
                   On success: {"status": "success", "output": ...}
                   On error: {"status": "error", "error": error_message}
 

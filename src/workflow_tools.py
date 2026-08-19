@@ -1,0 +1,251 @@
+"""Gate 10 workflow MCP tools — evidence discovery and CV refinement."""
+
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any, Optional, Dict, List, TYPE_CHECKING
+from datetime import datetime, timezone
+
+from src.evidence_backend import EvidenceBackend
+from src.evidence_service import JDAnalyzer, EvidenceMatcher
+from src.evidence_models import JDCriteria
+
+if TYPE_CHECKING:
+    from src.workflow_orchestrator import WorkflowOrchestrator
+
+logger = logging.getLogger(__name__)
+
+
+class WorkflowTools:
+    """MCP tool implementations for Gate 10 workflow."""
+
+    def __init__(self, backend: Optional[EvidenceBackend] = None, orchestrator: Optional[Any] = None):
+        """Initialize with backend and orchestrator instances."""
+        self.backend = backend
+        self.orchestrator = orchestrator
+        self.jd_analyzer = JDAnalyzer()
+        self.matcher = EvidenceMatcher()
+
+    def start_job_application_workflow(
+        self,
+        job_jd: str,
+        application_id: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        """
+        Initiate workflow: ingest JD, analyze, match evidence, identify gaps.
+
+        Args:
+            job_jd: Job description text or URL
+            application_id: Unique application identifier (e.g., "acme-001")
+            user_name: User name for personalization
+
+        Returns:
+            Dictionary with JD analysis, initial matches, gaps, and clarifying questions
+        """
+        try:
+            logger.info(f"Starting workflow for application {application_id}")
+
+            # Step 1: Extract company name and role from JD text
+            company_name = self._extract_company_name(job_jd)
+            role_title = self._extract_role_title(job_jd)
+            logger.info(f"Extracted: company={company_name}, role={role_title}")
+
+            # Step 2: Analyze JD using Gate 9 service
+            jd_analysis = self.jd_analyzer.analyze(job_jd, company_name, role_title)
+            logger.info(f"JD analysis complete: {len(jd_analysis.explicit_skills)} explicit skills")
+
+            # Step 3: Retrieve all application evidence
+            evidence_list = []
+            if self.backend:
+                try:
+                    evidence_list = self.backend.get_evidence_by_application(application_id)
+                    logger.info(f"Retrieved {len(evidence_list)} evidence items for application {application_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to retrieve evidence from backend: {e}")
+
+            # Step 4: Match evidence against JD
+            matched = []
+            if evidence_list:
+                ranked_evidence = self.matcher.rank_evidence(evidence_list, jd_analysis)
+                for ranked in ranked_evidence:
+                    if ranked.match_score > 0:
+                        matched.append({
+                            "evidence_id": ranked.evidence.id,
+                            "description": ranked.evidence.achievement,
+                            "matched_skills": ranked.matched_skills,
+                            "confidence_score": ranked.match_score,
+                            "source": ranked.evidence.source_section
+                        })
+
+            # Sort by confidence descending
+            matched.sort(key=lambda x: x["confidence_score"], reverse=True)
+            logger.info(f"Matched {len(matched)} evidence items with confidence > 0")
+
+            # Step 5: Identify gaps
+            matched_skills = set()
+            for match in matched:
+                matched_skills.update(match["matched_skills"])
+
+            all_required_skills = jd_analysis.explicit_skills + jd_analysis.inferred_skills
+            missing_skills = [s for s in all_required_skills
+                              if not any(self._skill_match(s, ms) for ms in matched_skills)]
+
+            coverage_percentage = (len(matched_skills) / max(len(jd_analysis.explicit_skills), 1)) * 100 if jd_analysis.explicit_skills else 0.0
+
+            # Step 6: Generate clarifying questions
+            questions = self._generate_clarifying_questions(
+                jd_analysis, missing_skills, matched, user_name
+            )
+
+            # Step 7: Determine next steps
+            next_steps = self._determine_next_steps(coverage_percentage, len(matched))
+
+            result = {
+                "application_id": application_id,
+                "jd_analysis": {
+                    "explicit_skills": jd_analysis.explicit_skills,
+                    "inferred_skills": jd_analysis.inferred_skills,
+                    "critical_criteria": jd_analysis.critical_criteria,
+                    "nice_to_have_criteria": [],  # TODO: Extract from JD as separate category
+                    "importance_ranking": jd_analysis.importance_ranking
+                },
+                "initial_matches": matched,
+                "identified_gaps": {
+                    "missing_skills": missing_skills,
+                    "missing_criteria": [],  # TODO: Compute from JD criteria not in matches
+                    "coverage_percentage": coverage_percentage
+                },
+                "clarifying_questions": questions,
+                "next_steps": next_steps,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+            logger.info(f"Workflow initiated for {application_id}: {coverage_percentage:.1f}% coverage")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error starting workflow for {application_id}: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "application_id": application_id,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+
+    def _extract_company_name(self, jd_text: str) -> str:
+        """Extract company name from JD text using simple heuristics."""
+        # Look for common patterns like "Company:", "Hiring for:", etc.
+        patterns = [
+            r"Company:\s*([^\n]+)",
+            r"About\s+([A-Z][A-Za-z0-9\s&.]*?)(?:\s+is\s+hiring|\n)",
+            r"^([A-Z][A-Za-z0-9\s&.]+?)\s+(?:is\s+)?hiring",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, jd_text, re.MULTILINE | re.IGNORECASE)
+            if match:
+                company = match.group(1).strip()
+                # Clean up common suffixes
+                company = re.sub(r"\s*(Inc|Ltd|LLC|Corp|Co|Corporation|Limited)\.?$", "", company, flags=re.IGNORECASE)
+                if company and len(company) > 2:
+                    return company
+
+        # Fallback: use first line or "Unknown Company"
+        first_line = jd_text.split("\n")[0].strip()
+        if len(first_line) > 3:
+            return first_line[:100]
+        return "Unknown Company"
+
+    def _extract_role_title(self, jd_text: str) -> str:
+        """Extract role title from JD text using simple heuristics."""
+        patterns = [
+            r"Position:\s*([^\n]+)",
+            r"Role:\s*([^\n]+)",
+            r"Job Title:\s*([^\n]+)",
+            r"^(Senior\s+[A-Za-z\s]+?)\s*(?:Role|Position|Required|Responsibilities)",
+            r"^([A-Za-z\s]{3,50}?)\s+(?:Engineer|Manager|Developer|Lead|Director|Officer)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, jd_text, re.MULTILINE | re.IGNORECASE)
+            if match:
+                title = match.group(1).strip()
+                if title and len(title) > 2:
+                    return title[:100]
+
+        # Fallback
+        return "Job Title Unknown"
+
+    @staticmethod
+    def _skill_match(skill1: str, skill2: str) -> bool:
+        """Check if two skills match (simple string matching with flexibility)."""
+        s1_lower = skill1.lower()
+        s2_lower = skill2.lower()
+        return s1_lower in s2_lower or s2_lower in s1_lower or s1_lower == s2_lower
+
+    def _generate_clarifying_questions(
+        self,
+        jd_analysis: JDCriteria,
+        missing_skills: List[str],
+        matched: List[Dict],
+        user_name: str
+    ) -> List[str]:
+        """Generate top 3-5 clarifying questions based on gaps and JD."""
+        questions = []
+
+        # Top missing skills
+        if missing_skills:
+            top_missing = missing_skills[:2]
+            skills_str = ", ".join(top_missing)
+            questions.append(
+                f"{user_name}, can you describe your experience with {skills_str}? "
+                "This is important for this role."
+            )
+
+        # If coverage is low, ask about adjacent skills
+        if not matched:
+            questions.append(
+                "Can you share achievements from roles involving the key skills this JD mentions? "
+                "Even if from different roles, we can highlight relevant experience."
+            )
+
+        # Ask for context-specific details
+        if jd_analysis.critical_criteria:
+            first_criterion = jd_analysis.critical_criteria[0]
+            questions.append(
+                f"For the '{first_criterion}' requirement, "
+                "can you share a specific example where you led or demonstrated this?"
+            )
+
+        # If some skills are important but not matched, ask about them
+        important_unmatched = [
+            skill for skill in jd_analysis.explicit_skills
+            if jd_analysis.importance_ranking.get(skill, 0.5) >= 0.7
+            and not any(self._skill_match(skill, m) for m in [match["description"] for match in matched])
+        ]
+        if important_unmatched and len(questions) < 4:
+            skill = important_unmatched[0]
+            questions.append(
+                f"Tell me about your hands-on experience with {skill}. "
+                "What's the most complex or impactful project you've done with it?"
+            )
+
+        # Add a closing/meta question
+        if len(questions) < 5:
+            questions.append(
+                "Are there any other skills, achievements, or experiences you'd like to highlight "
+                "that might not be obvious from your base CV?"
+            )
+
+        return questions[:5]  # Limit to 5 questions
+
+    def _determine_next_steps(self, coverage_percentage: float, match_count: int) -> str:
+        """Determine next workflow step based on coverage."""
+        if coverage_percentage >= 80 and match_count >= 5:
+            return "Ready to generate CV draft with strong evidence matches. Proceed to generate_cv_draft."
+        elif coverage_percentage >= 50:
+            return f"Fair coverage ({coverage_percentage:.0f}%). Answer clarifying questions to fill gaps before CV generation."
+        else:
+            return f"Low coverage ({coverage_percentage:.0f}%). Need to gather more evidence or re-frame existing evidence to match JD requirements."
