@@ -76,20 +76,24 @@ def load_tracker() -> dict:
 
 
 def _extract_pdf_text(pdf_path: Path) -> str:
-    """Extract text from PDF file."""
+    """Extract text from PDF file using pdfplumber (handles various PDF types)."""
     try:
-        import PyPDF2
+        import pdfplumber
     except ImportError:
-        logger.error("PyPDF2 not installed. Install with: pip install PyPDF2")
+        logger.error("pdfplumber not installed. Install with: pip install pdfplumber")
         return ""
 
     try:
         text = []
-        with open(pdf_path, "rb") as f:
-            pdf_reader = PyPDF2.PdfReader(f)
-            for page in pdf_reader.pages:
-                text.append(page.extract_text())
-        return "\n".join(text)
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                extracted = page.extract_text()
+                if extracted:
+                    text.append(extracted)
+        result = "\n".join(text)
+        if not result.strip():
+            logger.warning(f"No text extracted from PDF {pdf_path} - may be image-only or encrypted")
+        return result
     except Exception as e:
         logger.error(f"Failed to extract text from PDF {pdf_path}: {e}")
         return ""
