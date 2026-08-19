@@ -1176,6 +1176,88 @@ def _protected_lines(base_cv_text: str) -> list[str]:
     return lines
 
 
+def _extract_protected_numbers(text: str) -> dict:
+    """Extract all protected numbers/figures from text.
+
+    Returns dict: {
+        "raw_figures": [all matches],
+        "unique_figures": set of extracted numbers
+    }
+    """
+    matches = PROTECTED_NUMERIC_RE.findall(text)
+    # Extract just the numeric part
+    numbers = []
+    for match in matches:
+        num_match = re.search(r"\d+", match)
+        if num_match:
+            numbers.append(num_match.group())
+    return {
+        "raw_figures": matches,
+        "unique_figures": set(numbers),
+        "count": len(matches)
+    }
+
+
+def _validate_protected_content_smart(base_cv_text: str, new_cv_text: str) -> tuple[bool, list[str], dict]:
+    """Smart fabrication guard: Check if protected numbers are preserved.
+
+    Unlike exact-line matching, this checks:
+    1. Are all protected figures still present in the new text?
+    2. What's the string similarity between old and new protected lines?
+    3. If >90% similar AND all numbers preserved, allow rewording
+
+    Returns: (is_valid, altered_lines, analysis_details)
+    """
+    protected_base_lines = _protected_lines(base_cv_text)
+    if not protected_base_lines:
+        return True, [], {}  # No protected content to validate
+
+    # Extract numbers from base and new text
+    base_numbers = _extract_protected_numbers(base_cv_text)
+    new_numbers = _extract_protected_numbers(new_cv_text)
+
+    # Check if all base numbers are present in new text
+    missing_numbers = base_numbers["unique_figures"] - new_numbers["unique_figures"]
+
+    # Check each protected line for similarity
+    altered_lines = []
+    similarity_scores = {}
+
+    for base_line in protected_base_lines:
+        # Check if line exists exactly
+        if base_line in new_cv_text:
+            similarity_scores[base_line] = 1.0  # Perfect match
+            continue
+
+        # Check for similar lines (fuzzy matching)
+        best_match_ratio = 0.0
+        for new_line in new_cv_text.splitlines():
+            new_stripped = new_line.strip()
+            if new_stripped:
+                ratio = difflib.SequenceMatcher(None, base_line, new_stripped).ratio()
+                best_match_ratio = max(best_match_ratio, ratio)
+
+        similarity_scores[base_line] = best_match_ratio
+
+        # Flag if low similarity (less than 70%)
+        if best_match_ratio < 0.7:
+            altered_lines.append(base_line)
+
+    # Decision: valid if no missing numbers AND no severely altered lines
+    is_valid = len(missing_numbers) == 0 and len(altered_lines) == 0
+
+    analysis = {
+        "protected_lines_checked": len(protected_base_lines),
+        "exact_matches": sum(1 for s in similarity_scores.values() if s == 1.0),
+        "similarity_scores": similarity_scores,
+        "average_similarity": sum(similarity_scores.values()) / len(similarity_scores) if similarity_scores else 1.0,
+        "missing_numbers": list(missing_numbers),
+        "number_preservation": len(new_numbers["unique_figures"]) == len(base_numbers["unique_figures"]),
+    }
+
+    return is_valid, altered_lines, analysis
+
+
 def _resolve_base_cv_content(company_dir: Path) -> str | None:
     """Global Base_CV first (BASE_CV_PATH); falls back to a per-company CV file."""
     if BASE_CV_PATH.exists():
@@ -2862,8 +2944,138 @@ def tailor_cv(company: str) -> dict:
 
 
 @mcp.tool()
-def save_tailored_cv(company: str, content: str, diff_summary: list | None = None) -> dict:
-    """Save a tailored CV to the company folder.
+def review_cv_changes(company: str, proposed_content: str) -> dict:
+    """Review proposed CV changes and get detailed analysis of protected content.
+
+    (Option 2: Dedicated review tool for fabrication guard)
+
+    Compares proposed CV against Base_CV and identifies:
+    - Exact matches (protected lines unchanged)
+    - Rewording (similar content with same numbers)
+    - Altered content (content too different or numbers missing)
+    - Suggestions for fixes
+
+    Args:
+        company: Target employer name.
+        proposed_content: The proposed CV content to review.
+
+    Returns:
+        {
+            "company": str,
+            "status": "approved" | "needs_review" | "rejected",
+            "protected_lines_analysis": {
+                "total_protected_lines": int,
+                "exact_matches": list,
+                "reworded_acceptable": list (high similarity + numbers preserved),
+                "reworded_risky": list (medium similarity),
+                "altered_unacceptable": list (low similarity or missing numbers),
+            },
+            "number_preservation": {
+                "base_numbers": list,
+                "proposed_numbers": list,
+                "missing_numbers": list,
+                "preserved": bool,
+            },
+            "recommendations": list[str],
+            "can_save_with_allow_rewording": bool,
+        }
+    """
+    company_dir = ARTEFACTS_DIR / company
+    if not company_dir.exists():
+        return {"error": f"Company folder '{company}' not found."}
+
+    base_cv_content = _resolve_base_cv_content(company_dir)
+    if not base_cv_content:
+        return {
+            "company": company,
+            "status": "approved",
+            "message": "No Base_CV found - skipping validation",
+        }
+
+    # Run smart validation
+    is_valid, altered_lines, analysis = _validate_protected_content_smart(base_cv_content, proposed_content)
+
+    # Extract all protected lines with their status
+    protected_base_lines = _protected_lines(base_cv_content)
+    exact_matches = []
+    reworded_acceptable = []  # >90% similarity
+    reworded_risky = []       # 70-90% similarity
+    altered_unacceptable = [] # <70% similarity
+
+    for base_line in protected_base_lines:
+        if base_line in proposed_content:
+            exact_matches.append(base_line)
+        else:
+            score = analysis["similarity_scores"].get(base_line, 0.0)
+            if score >= 0.9:
+                reworded_acceptable.append({"original": base_line, "similarity": round(score, 2)})
+            elif score >= 0.7:
+                reworded_risky.append({"original": base_line, "similarity": round(score, 2)})
+            else:
+                altered_unacceptable.append({"original": base_line, "similarity": round(score, 2)})
+
+    # Determine status
+    if len(altered_unacceptable) > 0 or len(analysis["missing_numbers"]) > 0:
+        status = "rejected"
+        can_save = False
+    elif len(reworded_risky) > 0:
+        status = "needs_review"
+        can_save = True  # User can approve with allow_rewording=true
+    else:
+        status = "approved"
+        can_save = True
+
+    # Generate recommendations
+    recommendations = []
+    if len(altered_unacceptable) > 0:
+        recommendations.append(f"❌ {len(altered_unacceptable)} protected lines altered too much (similarity <70%)")
+    if len(analysis["missing_numbers"]) > 0:
+        recommendations.append(f"❌ Missing numbers: {', '.join(analysis['missing_numbers'])}")
+    if len(reworded_risky) > 0:
+        recommendations.append(f"⚠️  {len(reworded_risky)} lines reworded with medium confidence (similarity 70-90%)")
+    if len(reworded_acceptable) > 0:
+        recommendations.append(f"✓ {len(reworded_acceptable)} lines reworded with high confidence (similarity >90%)")
+    if len(exact_matches) > 0:
+        recommendations.append(f"✓ {len(exact_matches)} lines remain unchanged")
+
+    base_numbers = _extract_protected_numbers(base_cv_content)
+    proposed_numbers = _extract_protected_numbers(proposed_content)
+
+    return {
+        "company": company,
+        "status": status,
+        "protected_lines_analysis": {
+            "total_protected_lines": len(protected_base_lines),
+            "exact_matches": exact_matches,
+            "reworded_acceptable": reworded_acceptable,
+            "reworded_risky": reworded_risky,
+            "altered_unacceptable": altered_unacceptable,
+        },
+        "number_preservation": {
+            "base_numbers": base_numbers["raw_figures"],
+            "proposed_numbers": proposed_numbers["raw_figures"],
+            "missing_numbers": analysis["missing_numbers"],
+            "preserved": analysis["number_preservation"],
+        },
+        "overall_similarity": round(analysis["average_similarity"], 2),
+        "recommendations": recommendations,
+        "next_steps": (
+            "Ready to save - all checks passed ✓" if status == "approved"
+            else "Review risky rewording above, then call save_tailored_cv with allow_rewording=true" if status == "needs_review"
+            else "Fix the issues above before saving"
+        ),
+    }
+
+
+@mcp.tool()
+def save_tailored_cv(
+    company: str,
+    content: str,
+    diff_summary: list | None = None,
+    allow_rewording: bool = False,
+    use_smart_guard: bool = True,
+) -> dict:
+    """Save a tailored CV to the company folder with configurable fabrication guards.
 
     Args:
         company: Target employer name.
@@ -2871,6 +3083,13 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
         diff_summary: Optional list of {section, change_type, description} entries
             describing changes relative to the Base_CV. Auto-generated via a
             structural diff if omitted.
+        allow_rewording: (Option 1) If True, permit rewording of protected lines
+            as long as numbers are preserved. Uses smart guard for fuzzy matching.
+        use_smart_guard: (Option 3) If True (default), use intelligent number-based
+            validation instead of exact-line matching. Checks:
+            - Are all protected numbers still present?
+            - What's the string similarity of reworded lines?
+            - If >90% similar AND numbers preserved, allow it.
     """
     company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
@@ -2878,13 +3097,36 @@ def save_tailored_cv(company: str, content: str, diff_summary: list | None = Non
 
     base_cv_content = _resolve_base_cv_content(company_dir)
     if base_cv_content:
-        altered = [line for line in _protected_lines(base_cv_content) if line not in content]
-        if altered:
-            return {
-                "error": "fabrication_detected",
-                "message": "One or more protected figures from the Base_CV were altered or removed.",
-                "altered_segments": altered,
-            }
+        if use_smart_guard or allow_rewording:
+            # Option 3 (smart guard) or hybrid approach
+            is_valid, altered_lines, analysis = _validate_protected_content_smart(base_cv_content, content)
+            if not is_valid and not allow_rewording:
+                # Smart guard found issues, but rewording not allowed
+                return {
+                    "error": "fabrication_detected",
+                    "message": "Protected content validation failed.",
+                    "altered_segments": altered_lines,
+                    "analysis": analysis,
+                    "suggestion": "Numbers may be missing or content too different. Use allow_rewording=true to review changes.",
+                }
+            elif not is_valid and allow_rewording:
+                # Smart guard found issues, but rewording allowed - return for review
+                return {
+                    "error": "requires_approval",
+                    "message": "Content changes detected in protected sections.",
+                    "altered_segments": altered_lines,
+                    "analysis": analysis,
+                    "requires_review": True,
+                }
+        else:
+            # Legacy exact-match guard (Option 3 disabled)
+            altered = [line for line in _protected_lines(base_cv_content) if line not in content]
+            if altered:
+                return {
+                    "error": "fabrication_detected",
+                    "message": "One or more protected figures from the Base_CV were altered or removed.",
+                    "altered_segments": altered,
+                }
 
     if diff_summary is not None:
         for i, entry in enumerate(diff_summary):
