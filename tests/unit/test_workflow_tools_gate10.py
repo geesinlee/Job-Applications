@@ -344,8 +344,7 @@ def test_generate_clarifying_questions_creates_varied_questions():
         application_id="test-app",
         jd_analysis=jd_analysis,
         identified_gaps=identified_gaps,
-        initial_matches=initial_matches,
-        user_context="Senior engineer with 8 years experience"
+        initial_matches=initial_matches
     )
 
     assert result["application_id"] == "test-app"

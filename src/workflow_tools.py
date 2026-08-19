@@ -263,10 +263,9 @@ class WorkflowTools:
     def generate_clarifying_questions(
         self,
         application_id: str,
-        jd_analysis: dict,
-        identified_gaps: dict,
-        initial_matches: list,
-        user_context: Optional[str] = None
+        jd_analysis: dict[str, Any],
+        identified_gaps: dict[str, Any],
+        initial_matches: list[dict[str, Any]]
     ) -> dict[str, Any]:
         """
         Generate intelligent clarifying questions to fill evidence gaps.
@@ -355,7 +354,7 @@ class WorkflowTools:
             return result
 
         except Exception as e:
-            logger.error(f"Error generating clarifying questions for {application_id}: {e}")
+            logger.error(f"Error generating clarifying questions for {application_id}: {e}", exc_info=True)
             return {
                 "error": str(e),
                 "application_id": application_id
