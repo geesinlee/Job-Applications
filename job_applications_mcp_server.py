@@ -52,7 +52,8 @@ from src.evidence_service import (
     EvidenceMatcher,
     CVAssembler,
 )
-from src.evidence_backend import PostgresEvidenceBackend
+from src.evidence_backend import PostgresEvidenceBackend, InMemoryEvidenceBackend
+from src.workflow_tools import WorkflowTools
 
 __version__ = "0.3.0"
 
@@ -429,6 +430,116 @@ if MCP_MODE == "http":
     )
 else:
     mcp = FastMCP("job-applications")
+
+
+# Initialize Gate 10 Workflow Tools
+_workflow_backend = InMemoryEvidenceBackend()
+_workflow_tools = WorkflowTools(backend=_workflow_backend)
+
+
+# Register Gate 10 workflow tools as MCP endpoints
+@mcp.tool()
+def start_job_application_workflow(job_jd: str, application_id: str, user_name: str) -> dict:
+    """Start interactive evidence discovery & CV workflow (Gate 10).
+
+    Analyzes job description, matches existing evidence, and identifies gaps.
+
+    Args:
+        job_jd: Job description text
+        application_id: Unique application identifier
+        user_name: User name for personalization
+
+    Returns: JD analysis, initial matches, gaps, clarifying questions, and next steps
+    """
+    result = _workflow_tools.start_job_application_workflow(job_jd, application_id, user_name)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def generate_clarifying_questions(application_id: str, jd_analysis: dict, identified_gaps: dict, initial_matches: list) -> dict:
+    """Generate clarifying questions to fill evidence gaps (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+        jd_analysis: JD analysis output from start_job_application_workflow
+        identified_gaps: Gaps dict from start_job_application_workflow
+        initial_matches: Matched evidence from start_job_application_workflow
+
+    Returns: Generated questions with gap type, importance, and response guidance
+    """
+    result = _workflow_tools.generate_clarifying_questions(application_id, jd_analysis, identified_gaps, initial_matches)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def answer_clarifying_questions(application_id: str, answers: dict) -> dict:
+    """Record answers to clarifying questions and update evidence (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+        answers: Dictionary mapping question indices to answers
+
+    Returns: Updated evidence, revised gaps, and next workflow step
+    """
+    result = _workflow_tools.answer_clarifying_questions(application_id, answers)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def generate_cv_draft(application_id: str, jd_analysis: dict, matched_evidence: list) -> dict:
+    """Generate tailored CV draft from matched evidence (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+        jd_analysis: JD analysis dict
+        matched_evidence: List of matched evidence items
+
+    Returns: Tailored CV draft with matched sections and confidence scores
+    """
+    result = _workflow_tools.generate_cv_draft(application_id, jd_analysis, matched_evidence)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def revise_cv(application_id: str, cv_version: str, revision_notes: str) -> dict:
+    """Revise CV draft based on feedback (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+        cv_version: Current CV version string
+        revision_notes: Specific revision instructions
+
+    Returns: Revised CV with change tracking
+    """
+    result = _workflow_tools.revise_cv(application_id, cv_version, revision_notes)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def confirm_cv(application_id: str, cv_version: str) -> dict:
+    """Confirm CV as ready for submission (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+        cv_version: Final CV version string
+
+    Returns: Confirmation with submission metadata
+    """
+    result = _workflow_tools.confirm_cv(application_id, cv_version)
+    return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def get_workflow_state(application_id: str) -> dict:
+    """Get current workflow state and progress (Gate 10).
+
+    Args:
+        application_id: Unique application identifier
+
+    Returns: Current stage, completed steps, pending actions, and context summary
+    """
+    result = _workflow_tools.get_workflow_state(application_id)
+    return result if isinstance(result, dict) else {"error": str(result)}
 
 
 def _company_dir(company: str) -> Path:
