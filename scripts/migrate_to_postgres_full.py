@@ -346,7 +346,7 @@ async def phase_a_base_cv_ingestion():
         logger.info(f"Created application record: {app.id}")
 
         # Create CVRecord for base CV
-        cv_record = await db.c_v_record.create(
+        cv_record = await db.cvrecord.create(
             data={
                 "cvId": "base-cv-v1",
                 "applicationId": app.id,
