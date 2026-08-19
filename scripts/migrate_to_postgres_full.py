@@ -12,6 +12,7 @@ Usage:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -257,7 +258,7 @@ def _extract_skills_from_text(text: str) -> list[str]:
     return found_skills
 
 
-def phase_a_base_cv_ingestion():
+async def phase_a_base_cv_ingestion():
     """Phase a: Parse base CV and store in Postgres."""
     logger.info("=" * 80)
     logger.info("PHASE A: Base CV Ingestion")
@@ -285,16 +286,16 @@ def phase_a_base_cv_ingestion():
     # Create Postgres records
     try:
         db = Prisma()
-        db.connect()
+        await db.connect()
 
         # Create Application record for the base CV
-        app = db.application.create(
+        app = await db.application.create(
             data={"name": "base-cv-ground-truth"}
         )
         logger.info(f"Created application record: {app.id}")
 
         # Create CVRecord for base CV
-        cv_record = db.c_v_record.create(
+        cv_record = await db.c_v_record.create(
             data={
                 "cvId": "base-cv-v1",
                 "applicationId": app.id,
@@ -310,7 +311,7 @@ def phase_a_base_cv_ingestion():
         inserted = 0
         for ev in evidence_list:
             try:
-                structured_ev = db.structured_evidence.create(
+                structured_ev = await db.structured_evidence.create(
                     data={
                         "achievement": ev["achievement"],
                         "context": ev["context"],
@@ -329,7 +330,7 @@ def phase_a_base_cv_ingestion():
                 logger.warning(f"Failed to insert evidence: {e}")
 
         logger.info(f"Ingested {inserted}/{len(evidence_list)} evidence items into Postgres")
-        db.disconnect()
+        await db.disconnect()
         return True
 
     except Exception as e:
@@ -337,7 +338,7 @@ def phase_a_base_cv_ingestion():
         return False
 
 
-def phase_b_application_migration():
+async def phase_b_application_migration():
     """Phase b: Migrate tracker.json applications to Postgres."""
     logger.info("=" * 80)
     logger.info("PHASE B: Application Migration")
@@ -358,7 +359,7 @@ def phase_b_application_migration():
 
     try:
         db = Prisma()
-        db.connect()
+        await db.connect()
 
         migrated = 0
         for app_record in applications:
@@ -368,7 +369,7 @@ def phase_b_application_migration():
                 app_id = app_record.get("id", str(uuid.uuid4()))
 
                 # Check if already migrated
-                existing = db.application.find_unique(
+                existing = await db.application.find_unique(
                     where={"name": app_id}
                 )
                 if existing:
@@ -376,7 +377,7 @@ def phase_b_application_migration():
                     continue
 
                 # Create application
-                app = db.application.create(
+                app = await db.application.create(
                     data={"name": app_id}
                 )
                 logger.info(f"Migrated application: {company} - {role_title} ({app.id})")
@@ -386,7 +387,7 @@ def phase_b_application_migration():
                 logger.warning(f"Failed to migrate application {app_id}: {e}")
 
         logger.info(f"Migrated {migrated}/{len(applications)} applications")
-        db.disconnect()
+        await db.disconnect()
         return True
 
     except Exception as e:
@@ -454,7 +455,7 @@ def phase_d_cleanup():
     return True
 
 
-def main():
+async def main():
     parser = argparse.ArgumentParser(description="Migrate Job Applications to Postgres")
     parser.add_argument(
         "--phase",
@@ -486,7 +487,10 @@ def main():
         phase_name, phase_func = phases[phase_key]
         logger.info(f"\nRunning phase {phase_key}: {phase_name}...")
         try:
-            results[phase_key] = phase_func()
+            if asyncio.iscoroutinefunction(phase_func):
+                results[phase_key] = await phase_func()
+            else:
+                results[phase_key] = phase_func()
         except Exception as e:
             logger.error(f"Phase {phase_key} failed: {e}")
             results[phase_key] = False
@@ -504,4 +508,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(asyncio.run(main()))
