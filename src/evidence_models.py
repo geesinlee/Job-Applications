@@ -51,7 +51,7 @@ class RankedEvidence:
     suggested_rephrasing: Optional[str] = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class ApplicationScopedEvidence:
     """Evidence gathered during a specific job application workflow."""
 

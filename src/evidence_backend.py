@@ -54,7 +54,22 @@ class EvidenceBackend(ABC):
         pass
 
     @abstractmethod
-    def get_evidence_by_application(self, application_id: str) -> list:
+    def query_by_skills(self, skills: list) -> List[StructuredEvidence]:
+        """Query evidence by skills demonstrated."""
+        pass
+
+    @abstractmethod
+    def query_by_company(self, company_name: str) -> List[StructuredEvidence]:
+        """Query evidence by company name."""
+        pass
+
+    @abstractmethod
+    def query_by_timeframe(self, start: Optional[datetime], end: Optional[datetime]) -> List[StructuredEvidence]:
+        """Query evidence by time period."""
+        pass
+
+    @abstractmethod
+    def get_evidence_by_application(self, application_id: str) -> List[StructuredEvidence]:
         """Retrieve all evidence gathered for a specific application."""
         pass
 
@@ -137,8 +152,32 @@ class InMemoryEvidenceBackend(EvidenceBackend):
         logger.info(f"Deleted evidence: {evidence_id}")
         return True
 
-    def get_evidence_by_application(self, application_id: str) -> list:
+    def query_by_skills(self, skills: list) -> List[StructuredEvidence]:
+        """Query evidence by skills demonstrated."""
+        results = []
+        for evidence in self.storage.values():
+            if any(skill in evidence.skills_demonstrated for skill in skills):
+                results.append(evidence)
+        return results
+
+    def query_by_company(self, company_name: str) -> List[StructuredEvidence]:
+        """Query evidence by company name."""
+        return [e for e in self.storage.values() if e.company_name == company_name]
+
+    def query_by_timeframe(self, start: Optional[datetime], end: Optional[datetime]) -> List[StructuredEvidence]:
+        """Query evidence by time period."""
+        results = []
+        for evidence in self.storage.values():
+            if start and evidence.time_period_end and evidence.time_period_end < start:
+                continue
+            if end and evidence.time_period_start and evidence.time_period_start > end:
+                continue
+            results.append(evidence)
+        return results
+
+    def get_evidence_by_application(self, application_id: str) -> List[StructuredEvidence]:
         """Return evidence for this application."""
+        # Note: Returns raw dicts from in-memory store (should be StructuredEvidence in future)
         return self.app_evidence_store.get(application_id, [])
 
     def save_application_evidence(self, app_evidence) -> str:
@@ -312,18 +351,135 @@ class PostgresEvidenceBackend(EvidenceBackend):
             logger.error(f"Failed to delete evidence {evidence_id}: {e}")
             return self._fallback.delete_evidence(evidence_id)
 
-    def get_evidence_by_application(self, application_id: str) -> list:
-        """Retrieve all evidence linked to this application."""
-        try:
-            if not self._client:
-                return self._fallback.get_evidence_by_application(application_id)
+    def query_by_skills(self, skills: list) -> List[StructuredEvidence]:
+        """Query evidence by skills demonstrated."""
+        if not self._client:
+            return self._fallback.query_by_skills(skills)
 
-            evidence_records = self._client.structuredevidence.find_many(
+        try:
+            records = self._client.structuredevidence.find_many(
+                where={
+                    "skills_demonstrated": {"hasSome": skills}
+                }
+            )
+            return [
+                StructuredEvidence(
+                    id=r.id,
+                    achievement=r.achievement,
+                    context=r.context,
+                    impact=r.impact,
+                    skills_demonstrated=r.skills_demonstrated,
+                    job_title=r.job_title,
+                    company_name=r.company_name,
+                    time_period_start=r.time_period_start,
+                    time_period_end=r.time_period_end,
+                    source_section=r.source_section,
+                    source_cv_id=r.source_cv_id,
+                    created_at=r.createdAt,
+                    updated_at=r.updatedAt,
+                )
+                for r in records
+            ]
+        except Exception as e:
+            logger.error(f"Failed to query evidence by skills: {e}")
+            return self._fallback.query_by_skills(skills)
+
+    def query_by_company(self, company_name: str) -> List[StructuredEvidence]:
+        """Query evidence by company name."""
+        if not self._client:
+            return self._fallback.query_by_company(company_name)
+
+        try:
+            records = self._client.structuredevidence.find_many(
+                where={"company_name": company_name}
+            )
+            return [
+                StructuredEvidence(
+                    id=r.id,
+                    achievement=r.achievement,
+                    context=r.context,
+                    impact=r.impact,
+                    skills_demonstrated=r.skills_demonstrated,
+                    job_title=r.job_title,
+                    company_name=r.company_name,
+                    time_period_start=r.time_period_start,
+                    time_period_end=r.time_period_end,
+                    source_section=r.source_section,
+                    source_cv_id=r.source_cv_id,
+                    created_at=r.createdAt,
+                    updated_at=r.updatedAt,
+                )
+                for r in records
+            ]
+        except Exception as e:
+            logger.error(f"Failed to query evidence by company: {e}")
+            return self._fallback.query_by_company(company_name)
+
+    def query_by_timeframe(self, start: Optional[datetime], end: Optional[datetime]) -> List[StructuredEvidence]:
+        """Query evidence by time period."""
+        if not self._client:
+            return self._fallback.query_by_timeframe(start, end)
+
+        try:
+            where_clause = {}
+            if start:
+                where_clause["time_period_end"] = {"gte": start}
+            if end:
+                where_clause["time_period_start"] = {"lte": end}
+
+            records = self._client.structuredevidence.find_many(where=where_clause if where_clause else None)
+            return [
+                StructuredEvidence(
+                    id=r.id,
+                    achievement=r.achievement,
+                    context=r.context,
+                    impact=r.impact,
+                    skills_demonstrated=r.skills_demonstrated,
+                    job_title=r.job_title,
+                    company_name=r.company_name,
+                    time_period_start=r.time_period_start,
+                    time_period_end=r.time_period_end,
+                    source_section=r.source_section,
+                    source_cv_id=r.source_cv_id,
+                    created_at=r.createdAt,
+                    updated_at=r.updatedAt,
+                )
+                for r in records
+            ]
+        except Exception as e:
+            logger.error(f"Failed to query evidence by timeframe: {e}")
+            return self._fallback.query_by_timeframe(start, end)
+
+    def get_evidence_by_application(self, application_id: str) -> List[StructuredEvidence]:
+        """Retrieve all evidence linked to this application."""
+        if not self._client:
+            return self._fallback.get_evidence_by_application(application_id)
+
+        try:
+            records = self._client.structuredevidence.find_many(
                 where={"application_id": application_id}
             )
-            return evidence_records
-        except Exception:
-            return []  # Fallback on error
+            return [
+                StructuredEvidence(
+                    id=r.id,
+                    achievement=r.achievement,
+                    context=r.context,
+                    impact=r.impact,
+                    skills_demonstrated=r.skills_demonstrated,
+                    job_title=r.job_title,
+                    company_name=r.company_name,
+                    time_period_start=r.time_period_start,
+                    time_period_end=r.time_period_end,
+                    source_section=r.source_section,
+                    source_cv_id=r.source_cv_id,
+                    created_at=r.createdAt,
+                    updated_at=r.updatedAt,
+                )
+                for r in records
+            ]
+        except Exception as e:
+            logger.error(f"Failed to get evidence for app {application_id}: {e}")
+            return []
 
     def save_application_evidence(self, app_evidence) -> str:
         """Save application-scoped evidence to Postgres."""
@@ -334,17 +490,26 @@ class PostgresEvidenceBackend(EvidenceBackend):
 
                 return str(uuid.uuid4())
 
+            # Capture both question and response in description until dedicated ApplicationEvidence table
+            description_parts = []
+            if app_evidence.question:
+                description_parts.append(f"Q: {app_evidence.question}")
+            if app_evidence.response:
+                description_parts.append(f"A: {app_evidence.response}")
+            description = " ".join(description_parts) if description_parts else ""
+
             record = self._client.structuredevidence.create(
                 data={
-                    "user_id": "system",  # Or extract from context
-                    "description": app_evidence.response or app_evidence.question or "",
+                    "user_id": "workflow-agent",
+                    "description": description,
                     "source_type": app_evidence.source,
                     "application_id": app_evidence.application_id,
-                    "tags": ["gathered_during_workflow"],
+                    "tags": ["workflow", "user_input"],
                 }
             )
             return record.id
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to save application evidence: {e}")
             import uuid
 
             return str(uuid.uuid4())
