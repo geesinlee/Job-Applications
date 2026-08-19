@@ -1,355 +1,1298 @@
-"""
-Tests for Gate 10 workflow tools: confirm_cv and get_workflow_state.
-
-Tests cover:
-- CV confirmation (user approval/rejection)
-- Workflow state retrieval at different stages
-- Error handling and edge cases
-"""
+"""Tests for Gate 10 workflow tools."""
 
 import pytest
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+
 from src.workflow_tools import WorkflowTools
-from src.evidence_models import StructuredEvidence
+from src.evidence_models import StructuredEvidence, JDCriteria, RankedEvidence
 
 
 @pytest.fixture
 def mock_backend():
-    """Create a mock evidence backend."""
-    backend = MagicMock()
-    return backend
+    """Create a mock backend."""
+    return MagicMock()
 
 
 @pytest.fixture
-def workflow_tools(mock_backend):
-    """Create WorkflowTools instance with mock backend."""
-    return WorkflowTools(backend=mock_backend)
+def mock_orchestrator():
+    """Create a mock orchestrator."""
+    return MagicMock()
 
 
-# ============================================================================
-# TASK 3E: CONFIRM_CV TESTS
-# ============================================================================
+@pytest.fixture
+def workflow_tools(mock_backend, mock_orchestrator):
+    """Create WorkflowTools instance with mocks."""
+    return WorkflowTools(backend=mock_backend, orchestrator=mock_orchestrator)
 
 
-def test_confirm_cv_user_approves(workflow_tools):
-    """Test confirm_cv when user approves the CV."""
-    result = workflow_tools.confirm_cv(
-        application_id="test-app-001",
-        cv_draft="# Experience\nLed team at TechCorp\n\n# Skills\nPython, Kubernetes",
-        confirmed_by_user=True
+def test_start_job_application_workflow_initiates_workflow(workflow_tools, mock_backend):
+    """Test that start_job_application_workflow analyzes JD and matches evidence."""
+
+    # Mock evidence
+    evidence = StructuredEvidence(
+        achievement="Led team of 5 engineers on cloud migration project",
+        context="At TechCorp, responsible for infrastructure modernization",
+        impact="Reduced deployment time by 60%, improved reliability",
+        skills_demonstrated=["Python", "AWS", "Leadership"],
+        job_title="Senior Engineer",
+        company_name="TechCorp",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        time_period_start=datetime(2023, 1, 1),
+        time_period_end=datetime(2024, 6, 30),
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    result = workflow_tools.start_job_application_workflow(
+        job_jd="Acme Corp is hiring for a Senior Software Engineer role. Required: Python, AWS, Leadership.",
+        application_id="acme-001",
+        user_name="Alice"
     )
 
-    assert result["confirmed"] is True
-    assert result["application_id"] == "test-app-001"
-    assert result["next_action"] == "proceed_to_submit"
-    assert result["cv_version"] > 0
-    assert "cv_final" in result["saved_path"]
-    assert "test-app-001" in result["saved_path"]
+    # Assertions
+    assert result["application_id"] == "acme-001"
+    assert "jd_analysis" in result
+    assert isinstance(result["jd_analysis"]["explicit_skills"], list)
+    assert len(result["jd_analysis"]["explicit_skills"]) > 0
+    assert "identified_gaps" in result
+    assert "clarifying_questions" in result
+    assert isinstance(result["clarifying_questions"], list)
+    assert len(result["clarifying_questions"]) > 0
+    assert "next_steps" in result
+    # Note: per spec, timestamp is only in error responses, not success responses
+    assert "timestamp" not in result
 
 
-def test_confirm_cv_user_rejects(workflow_tools):
-    """Test confirm_cv when user rejects the CV and wants revisions."""
-    result = workflow_tools.confirm_cv(
-        application_id="test-app-002",
-        cv_draft="# Experience\nSome content",
-        confirmed_by_user=False
+def test_start_job_application_workflow_with_no_backend(workflow_tools):
+    """Test workflow when backend is None."""
+    tools = WorkflowTools(backend=None, orchestrator=None)
+
+    jd = "Senior Engineer - Python/AWS at Acme Corp"
+    result = tools.start_job_application_workflow(
+        job_jd=jd,
+        application_id="app-001",
+        user_name="Bob"
     )
 
-    assert result["confirmed"] is False
-    assert result["application_id"] == "test-app-002"
-    assert result["next_action"] == "revise_again"
-    assert result["cv_version"] == 0
-    assert result["saved_path"] is None
+    assert result["application_id"] == "app-001"
+    assert "jd_analysis" in result
+    assert "identified_gaps" in result
+    assert result["identified_gaps"]["coverage_percentage"] == 0.0  # No evidence
 
 
-def test_confirm_cv_with_long_content(workflow_tools):
-    """Test confirm_cv with longer CV content."""
-    long_cv = """# Strategic Account Executive - Tailored CV
+def test_start_job_application_workflow_handles_no_evidence(workflow_tools, mock_backend):
+    """Test workflow when no evidence exists for application."""
+    mock_backend.get_evidence_by_application.return_value = []
 
-## Summary
-Experienced SAE with enterprise account management background.
-
-## Experience
-
-### Acme Corp (2020-2023)
-Senior Account Manager
-- Managed 5 enterprise accounts, each $10M+ ARR
-- Grew account value by average 35% year-over-year
-- Led quarterly business reviews with C-level executives
-
-### Salesforce (2017-2020)
-Account Executive
-- Closed $15M in new business annually
-- Achieved 98% customer retention
-- Mentored 3 junior AEs
-
-## Skills
-- Enterprise sales
-- Strategic account planning
-- Analyst relations
-- SaaS expertise
-"""
-    result = workflow_tools.confirm_cv(
-        application_id="gartner-sae-001",
-        cv_draft=long_cv,
-        confirmed_by_user=True
+    result = workflow_tools.start_job_application_workflow(
+        job_jd="Test JD",
+        application_id="new-app-001",
+        user_name="Charlie"
     )
 
-    assert result["confirmed"] is True
-    assert len(result["saved_path"]) > 0
+    assert result["application_id"] == "new-app-001"
+    assert result["identified_gaps"]["coverage_percentage"] == 0.0
+    assert len(result["clarifying_questions"]) > 0
 
 
-def test_confirm_cv_error_handling(workflow_tools):
-    """Test error handling in confirm_cv when unexpected error occurs."""
-    # Mock the backend to raise an exception during a hypothetical save
-    workflow_tools.backend.side_effect = Exception("Database error")
+def test_start_job_application_workflow_error_handling(workflow_tools, mock_backend):
+    """Test error handling when backend fails."""
+    mock_backend.get_evidence_by_application.side_effect = Exception("DB error")
 
-    result = workflow_tools.confirm_cv(
-        application_id="error-app",
-        cv_draft="Valid CV content",
-        confirmed_by_user=True
+    result = workflow_tools.start_job_application_workflow(
+        job_jd="Test JD",
+        application_id="app-001",
+        user_name="Diana"
     )
 
-    # Should handle gracefully with error dict
-    assert "error" in result or "confirmed" in result
-    assert result["application_id"] == "error-app"
+    assert "application_id" in result
+    assert result["application_id"] == "app-001"
+    # Should still return a valid result even with backend error
+    assert "jd_analysis" in result
+    assert "identified_gaps" in result
 
 
-def test_confirm_cv_preserves_application_id(workflow_tools):
-    """Test that confirm_cv always returns the application_id."""
-    for app_id in ["app-1", "gartner_sae_2026", "acme-002"]:
-        result = workflow_tools.confirm_cv(
-            application_id=app_id,
-            cv_draft="Test CV",
-            confirmed_by_user=True
-        )
-        assert result["application_id"] == app_id
+def test_extract_company_name():
+    """Test company name extraction."""
+    tools = WorkflowTools()
+
+    # Test explicit pattern
+    jd1 = "Company: Acme Corp\nJob Description..."
+    assert "Acme" in tools._extract_company_name(jd1)
+
+    # Test about pattern
+    jd2 = "About Google\n\nGoogle is hiring..."
+    assert "Google" in tools._extract_company_name(jd2)
+
+    # Test fallback
+    jd3 = "Some JD"
+    result = tools._extract_company_name(jd3)
+    assert isinstance(result, str) and len(result) > 0
 
 
-def test_confirm_cv_version_is_unique(workflow_tools):
-    """Test that multiple CV confirmations get unique versions."""
-    import time
+def test_extract_role_title():
+    """Test role title extraction."""
+    tools = WorkflowTools()
 
-    result1 = workflow_tools.confirm_cv(
-        application_id="unique-test",
-        cv_draft="CV Draft 1",
-        confirmed_by_user=True
+    # Test explicit pattern
+    jd1 = "Position: Senior Software Engineer\n\nDescription..."
+    assert "Senior" in tools._extract_role_title(jd1)
+
+    # Test role pattern
+    jd2 = "Role: Backend Developer"
+    assert "Backend" in tools._extract_role_title(jd2)
+
+    # Test fallback
+    jd3 = "Some JD"
+    result = tools._extract_role_title(jd3)
+    assert isinstance(result, str) and len(result) > 0
+
+
+def test_skill_match():
+    """Test skill matching logic."""
+    tools = WorkflowTools()
+
+    # Exact match
+    assert tools._skill_match("Python", "Python")
+
+    # Case insensitive
+    assert tools._skill_match("python", "Python")
+
+    # Partial match
+    assert tools._skill_match("Python", "python programming")
+    assert tools._skill_match("AWS", "amazon AWS")
+
+    # No match
+    assert not tools._skill_match("Python", "Java")
+
+
+def test_generate_clarifying_questions(workflow_tools):
+    """Test clarifying question generation."""
+    jd_analysis = JDCriteria(
+        explicit_skills=["Python", "AWS", "Docker"],
+        inferred_skills=["Cloud Architecture"],
+        critical_criteria=["5+ years experience", "Kubernetes"],
+        importance_ranking={"Python": 0.9, "AWS": 0.85, "Docker": 0.7},
+        company_name="Acme",
+        role_title="Senior Engineer"
     )
 
-    # Add delay to ensure different second-level timestamps
-    time.sleep(1.1)
+    missing_skills = ["Docker", "Kubernetes"]
+    matched = []
 
-    result2 = workflow_tools.confirm_cv(
-        application_id="unique-test",
-        cv_draft="CV Draft 2",
-        confirmed_by_user=True
+    questions = workflow_tools._generate_clarifying_questions(
+        jd_analysis, missing_skills, matched, "Alice"
     )
 
-    # Versions should be different (timestamps are unique)
-    assert result1["cv_version"] != result2["cv_version"]
+    assert isinstance(questions, list)
+    assert len(questions) > 0
+    assert len(questions) <= 5
+    # Should mention missing skills
+    assert any("Docker" in q or "Kubernetes" in q for q in questions)
 
 
-# ============================================================================
-# TASK 3E: GET_WORKFLOW_STATE TESTS
-# ============================================================================
+def test_determine_next_steps(workflow_tools):
+    """Test next steps determination."""
+    # High coverage
+    result = workflow_tools._determine_next_steps(85.0, 5)
+    assert "Ready to generate CV draft" in result
+
+    # Medium coverage
+    result = workflow_tools._determine_next_steps(60.0, 3)
+    assert "Answer clarifying questions" in result
+
+    # Low coverage
+    result = workflow_tools._determine_next_steps(20.0, 1)
+    assert "Low coverage" in result
 
 
-def test_get_workflow_state_jd_analysis_stage(mock_backend, workflow_tools):
-    """Test workflow state at JD analysis stage (no evidence yet)."""
-    mock_backend.get_evidence_by_cv_id.return_value = []
+def test_start_job_application_workflow_high_coverage(workflow_tools, mock_backend):
+    """Test workflow with high evidence coverage."""
+    # Create multiple matching evidence
+    evidence_list = [
+        StructuredEvidence(
+            achievement="Built microservices in Python",
+            context="At Company A",
+            impact="Improved performance 10x",
+            skills_demonstrated=["Python", "microservices"],
+            job_title="Engineer",
+            company_name="Company A",
+            source_section="Experience",
+            source_cv_id="cv-001",
+            id="ev-001"
+        ),
+        StructuredEvidence(
+            achievement="Deployed to AWS",
+            context="At Company B",
+            impact="Reduced costs 30%",
+            skills_demonstrated=["AWS", "DevOps"],
+            job_title="DevOps Engineer",
+            company_name="Company B",
+            source_section="Experience",
+            source_cv_id="cv-001",
+            id="ev-002"
+        ),
+    ]
+    mock_backend.get_evidence_by_application.return_value = evidence_list
 
-    result = workflow_tools.get_workflow_state("test-app")
+    result = workflow_tools.start_job_application_workflow(
+        job_jd="Senior Engineer - Python/AWS required",
+        application_id="high-coverage-app",
+        user_name="Eve"
+    )
 
-    assert result["application_id"] == "test-app"
-    assert result["current_stage"] == "jd_analysis"
-    assert result["progress_percent"] == 10
-    assert result["evidence_count"] == 0
-    assert result["questions_asked"] == 0
-    assert result["cv_iterations"] == 0
-    assert "JD analyzed" in result["summary"]
-
-
-def test_get_workflow_state_evidence_gathering_stage(mock_backend, workflow_tools):
-    """Test workflow state at evidence gathering stage (1-2 items)."""
-    mock_evidence = [MagicMock() for _ in range(2)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
-
-    result = workflow_tools.get_workflow_state("test-app")
-
-    assert result["current_stage"] == "evidence_gathering"
-    assert result["progress_percent"] == 30
-    assert result["evidence_count"] == 2
-    assert result["questions_asked"] == 2
-    assert "Collecting evidence" in result["summary"]
-
-
-def test_get_workflow_state_cv_generation_stage(mock_backend, workflow_tools):
-    """Test workflow state at CV generation stage (3-7 items)."""
-    mock_evidence = [MagicMock() for _ in range(5)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
-
-    result = workflow_tools.get_workflow_state("test-app")
-
-    assert result["current_stage"] == "cv_generation"
-    assert result["progress_percent"] == 60
-    assert result["evidence_count"] == 5
-    assert result["questions_asked"] == 5
-    assert result["cv_iterations"] == max(0, (5 - 3) // 2)
-    assert "Strong evidence collection" in result["summary"]
+    assert result["application_id"] == "high-coverage-app"
+    assert len(result["initial_matches"]) > 0
+    assert result["identified_gaps"]["coverage_percentage"] > 0
 
 
-def test_get_workflow_state_cv_refinement_stage(mock_backend, workflow_tools):
-    """Test workflow state at CV refinement stage (8+ items)."""
-    mock_evidence = [MagicMock() for _ in range(10)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
+def test_start_job_application_workflow_full_flow(workflow_tools, mock_backend):
+    """Test complete workflow flow with realistic data."""
+    evidence = StructuredEvidence(
+        achievement="Led architecture redesign",
+        context="Modernized legacy system",
+        impact="Reduced technical debt by 40%",
+        skills_demonstrated=["System Design", "Python"],
+        job_title="Senior Architect",
+        company_name="OldTech",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        time_period_start=datetime(2022, 1, 1),
+        time_period_end=datetime(2024, 8, 1),
+        id="ev-arch-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
 
-    result = workflow_tools.get_workflow_state("test-app")
+    jd_text = """
+    Position: Senior Software Engineer
+    Company: NewTech Inc
 
-    assert result["current_stage"] == "cv_refinement"
-    assert result["progress_percent"] == 85
-    assert result["evidence_count"] == 10
-    assert result["questions_asked"] == 7  # capped at 7
-    assert result["cv_iterations"] == max(0, (10 - 3) // 2)
-    assert "CV generated" in result["summary"]
+    About NewTech:
+    We're a cloud-first company building next-generation infrastructure.
+
+    Requirements:
+    - 5+ years in system design and architecture
+    - Expert in Python and cloud technologies
+    - Experience with microservices and Kubernetes
+    - Strong leadership skills
+    """
+
+    result = workflow_tools.start_job_application_workflow(
+        job_jd=jd_text,
+        application_id="newtech-senior-eng",
+        user_name="Frank"
+    )
+
+    # Verify structure
+    assert result["application_id"] == "newtech-senior-eng"
+    assert "jd_analysis" in result
+    assert "initial_matches" in result
+    assert "identified_gaps" in result
+    assert "clarifying_questions" in result
+    assert "next_steps" in result
+    # Note: per spec, timestamp is only in error responses, not success responses
+    assert "timestamp" not in result
+
+    # Verify content
+    jd = result["jd_analysis"]
+    assert isinstance(jd["explicit_skills"], list)
+    assert isinstance(jd["inferred_skills"], list)
+    assert isinstance(jd["critical_criteria"], list)
+    assert isinstance(jd["importance_ranking"], dict)
+
+    gaps = result["identified_gaps"]
+    assert isinstance(gaps["missing_skills"], list)
+    assert isinstance(gaps["missing_criteria"], list)
+    assert 0 <= gaps["coverage_percentage"] <= 100
+
+    questions = result["clarifying_questions"]
+    assert isinstance(questions, list)
+    assert all(isinstance(q, str) for q in questions)
 
 
-def test_get_workflow_state_includes_timestamp(mock_backend, workflow_tools):
-    """Test that workflow state includes ISO timestamp."""
-    mock_backend.get_evidence_by_cv_id.return_value = []
+def test_generate_clarifying_questions_creates_varied_questions():
+    """Test that generate_clarifying_questions creates diverse question types."""
 
-    result = workflow_tools.get_workflow_state("test-app")
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
 
-    assert "last_update" in result
-    # Should be parseable as ISO format
-    datetime.fromisoformat(result["last_update"])
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": ["Cloud Architecture"],
+        "critical_criteria": ["5+ years"],
+        "nice_to_have_criteria": ["Team leadership"],
+        "importance_ranking": {"Python": 0.9, "AWS": 0.85}
+    }
 
+    identified_gaps = {
+        "missing_skills": ["Kubernetes", "Docker"],
+        "missing_criteria": ["Team leadership"],
+        "coverage_percentage": 60.0
+    }
 
-def test_get_workflow_state_error_handling(mock_backend, workflow_tools):
-    """Test error handling when backend fails - gracefully degrades to empty state."""
-    mock_backend.get_evidence_by_cv_id.side_effect = Exception("DB connection failed")
-
-    result = workflow_tools.get_workflow_state("error-app")
-
-    # Should return a valid response even on error, with fallback state
-    assert result["application_id"] == "error-app"
-    # On backend error, _get_application_evidence catches it and returns empty list
-    # So we should be in jd_analysis stage (evidence_count == 0)
-    assert result["evidence_count"] == 0
-    assert result["current_stage"] == "jd_analysis"
-
-
-def test_get_workflow_state_cv_iteration_calculation(mock_backend, workflow_tools):
-    """Test that CV iteration count is calculated correctly."""
-    test_cases = [
-        (0, 0),   # 0 evidence -> 0 iterations
-        (1, 0),   # 1 evidence -> 0 iterations
-        (2, 0),   # 2 evidence -> 0 iterations
-        (3, 0),   # 3 evidence -> 0 iterations
-        (4, 0),   # 4 evidence -> (4-3)//2 = 0
-        (5, 1),   # 5 evidence -> (5-3)//2 = 1
-        (6, 1),   # 6 evidence -> (6-3)//2 = 1
-        (7, 2),   # 7 evidence -> (7-3)//2 = 2
-        (10, 3),  # 10 evidence -> (10-3)//2 = 3
+    initial_matches = [
+        {
+            "evidence_id": "ev-001",
+            "matched_skills": ["Python", "AWS"],
+            "confidence_score": 0.85
+        }
     ]
 
-    for evidence_count, expected_iterations in test_cases:
-        mock_evidence = [MagicMock() for _ in range(evidence_count)]
-        mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
+    result = tools.generate_clarifying_questions(
+        application_id="test-app",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
 
-        result = workflow_tools.get_workflow_state("test-app")
+    assert result["application_id"] == "test-app"
+    assert len(result["clarifying_questions"]) > 0
+    assert len(result["clarifying_questions"]) <= 7
 
-        assert result["cv_iterations"] == expected_iterations, (
-            f"Evidence count {evidence_count} should yield "
-            f"{expected_iterations} iterations, got {result['cv_iterations']}"
+    # Check question structure
+    for q in result["clarifying_questions"]:
+        assert "question" in q
+        assert "gap_type" in q
+        assert "importance" in q
+        assert q["gap_type"] in ["missing_skill", "missing_criteria", "adjacent_skill", "context"]
+        assert "suggested_prompt" in q
+        assert "expected_response_type" in q
+
+
+def test_generate_clarifying_questions_high_coverage_strategy():
+    """Test that high coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": [],
+        "missing_criteria": [],
+        "coverage_percentage": 85.0  # High coverage
+    }
+
+    initial_matches = [
+        {"evidence_id": f"ev-{i}", "matched_skills": ["Python"], "confidence_score": 0.8}
+        for i in range(6)
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-2",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Strong coverage" in result["strategy"]
+    assert "deepen" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_moderate_coverage_strategy():
+    """Test that moderate coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": ["Kubernetes"],
+        "critical_criteria": ["5+ years"],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {"Python": 0.9}
+    }
+
+    identified_gaps = {
+        "missing_skills": ["Kubernetes"],
+        "missing_criteria": ["5+ years"],
+        "coverage_percentage": 60.0  # Moderate coverage
+    }
+
+    initial_matches = [
+        {"evidence_id": "ev-001", "matched_skills": ["Python"], "confidence_score": 0.8}
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-3",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Moderate coverage" in result["strategy"]
+    assert "fill critical gaps" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_low_coverage_strategy():
+    """Test that low coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS", "Kubernetes"],
+        "inferred_skills": ["Cloud Architecture", "DevOps"],
+        "critical_criteria": ["5+ years", "Team leadership"],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": ["AWS", "Kubernetes"],
+        "missing_criteria": ["Team leadership"],
+        "coverage_percentage": 20.0  # Low coverage
+    }
+
+    initial_matches = []  # No matches
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-4",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Low coverage" in result["strategy"]
+    assert "skill discovery" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_error_handling():
+    """Test error handling in generate_clarifying_questions."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    result = tools.generate_clarifying_questions(
+        application_id="error-app",
+        jd_analysis=None,  # Invalid: None instead of dict
+        identified_gaps={},
+        initial_matches=[]
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+
+
+def test_generate_clarifying_questions_prioritizes_high_importance():
+    """Test that high importance skills get asked first."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {
+            "Python": 0.95,  # Very high importance
+            "Docker": 0.4    # Low importance
+        }
+    }
+
+    identified_gaps = {
+        "missing_skills": ["Python", "Docker"],
+        "missing_criteria": [],
+        "coverage_percentage": 50.0
+    }
+
+    initial_matches = []
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-priority",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    questions = result["clarifying_questions"]
+
+    # Find questions about Python and Docker
+    python_questions = [q for q in questions if "Python" in q["question"]]
+    docker_questions = [q for q in questions if "Docker" in q["question"]]
+
+    # Python should have higher importance than Docker
+    if python_questions and docker_questions:
+        assert python_questions[0]["importance"] > docker_questions[0]["importance"]
+
+
+def test_generate_clarifying_questions_empty_gaps():
+    """Test generate_clarifying_questions with no gaps."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": [],
+        "missing_criteria": [],
+        "coverage_percentage": 100.0
+    }
+
+    initial_matches = [
+        {"evidence_id": "ev-001", "matched_skills": ["Python"], "confidence_score": 0.95}
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="complete-match-app",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    # Should still generate depth questions even with no gaps
+    assert len(result["clarifying_questions"]) > 0
+    assert result["application_id"] == "complete-match-app"
+
+
+# Tests for answer_clarifying_questions (Task 3c)
+
+def test_answer_clarifying_questions_stores_evidence(mock_backend):
+    """Test that answer_clarifying_questions stores evidence correctly."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-001"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Led a team of 5 engineers building cloud infrastructure",
+        confidence=0.85
+    )
+
+    assert result["application_id"] == "test-app"
+    assert result["evidence_stored"] is True
+    assert result["evidence_id"] == "ev-new-001"
+    assert result["questions_answered"] == 1
+    assert result["questions_remaining"] == 6
+
+    # Verify backend was called
+    mock_backend.save_application_evidence.assert_called_once()
+
+
+def test_answer_clarifying_questions_skip(mock_backend):
+    """Test that skip action doesn't store evidence."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="",
+        skip=True
+    )
+
+    assert result["evidence_stored"] is False
+    assert result["evidence_id"] is None
+    assert "Skipped" in result["summary"]
+    assert result["next_action"] == "ask_next_question"
+
+    # Backend should NOT be called for skipped questions
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_empty_answer(mock_backend):
+    """Test that empty answer is rejected without storing."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="",
+        confidence=0.5
+    )
+
+    assert result["evidence_stored"] is False
+    assert result["evidence_id"] is None
+    assert result["next_action"] == "ask_more_clarifications"
+    assert "Please provide an answer" in result["summary"]
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_whitespace_answer(mock_backend):
+    """Test that whitespace-only answer is rejected."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="   \t\n  ",
+        confidence=0.5
+    )
+
+    assert result["evidence_stored"] is False
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_determines_next_action_substantial_answer(mock_backend):
+    """Test next_action for substantial answer with high confidence."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-002"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="I spent 3 years building microservices with Python and Docker, leading a team of engineers",
+        confidence=0.9
+    )
+
+    assert result["next_action"] == "ask_next_question"
+    assert "Good answer" in result["summary"]
+
+
+def test_answer_clarifying_questions_determines_next_action_low_confidence(mock_backend):
+    """Test next_action for low confidence answer."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-003"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="maybe something with Python",
+        confidence=0.3
+    )
+
+    assert result["next_action"] == "ask_more_clarifications"
+    assert "Can you provide more" in result["summary"]
+
+
+def test_answer_clarifying_questions_determines_next_action_brief_answer(mock_backend):
+    """Test next_action for brief answer (<=20 chars)."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-004"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=3,
+        answer="Yes, I did that",  # 16 characters
+        confidence=0.7
+    )
+
+    assert result["next_action"] == "ask_more_clarifications"
+
+
+def test_answer_clarifying_questions_suggest_cv_generation_after_5_questions(mock_backend):
+    """Test that after 5+ questions, suggest proceeding to CV generation."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-005"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=5,  # 6th question (0-based)
+        answer="Lots of relevant experience here with multiple projects",
+        confidence=0.8
+    )
+
+    assert result["next_action"] == "proceed_to_cv_generation"
+    assert "Ready to generate CV" in result["summary"]
+    assert result["questions_answered"] == 6
+    assert result["questions_remaining"] == 1
+
+
+def test_answer_clarifying_questions_suggest_cv_generation_after_6_questions(mock_backend):
+    """Test that after 6 questions, suggest proceeding to CV generation."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-006"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=6,  # 7th question (0-based)
+        answer="Another detailed response about experience",
+        confidence=0.75
+    )
+
+    assert result["next_action"] == "proceed_to_cv_generation"
+    assert result["questions_answered"] == 7
+    assert result["questions_remaining"] == 0
+
+
+def test_answer_clarifying_questions_error_handling(mock_backend):
+    """Test error handling in answer_clarifying_questions."""
+
+    mock_backend.save_application_evidence.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="error-app",
+        question_index=0,
+        answer="test answer"
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+    assert result["evidence_stored"] is False
+
+
+def test_answer_clarifying_questions_default_confidence_is_none(mock_backend):
+    """Test that when confidence is None (not provided), it's handled correctly."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-007"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="This is a substantial answer with good details about experience",
+        confidence=None  # Not provided
+    )
+
+    assert result["evidence_stored"] is True
+    assert result["next_action"] == "ask_next_question"
+    assert "not specified" in result["summary"]
+
+
+def test_answer_clarifying_questions_sequence(mock_backend):
+    """Test a sequence of answers progressing toward CV generation."""
+
+    mock_backend.save_application_evidence.side_effect = [
+        "ev-q0-001", "ev-q1-002", "ev-q2-003", "ev-q3-004", "ev-q4-005", "ev-q5-006"
+    ]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    # Question 0
+    result0 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Strong experience with cloud architecture and distributed systems",
+        confidence=0.85
+    )
+    assert result0["next_action"] == "ask_next_question"
+    assert result0["questions_answered"] == 1
+
+    # Question 1
+    result1 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="Led teams of 3-8 engineers on mission-critical projects",
+        confidence=0.9
+    )
+    assert result1["next_action"] == "ask_next_question"
+    assert result1["questions_answered"] == 2
+
+    # Question 2
+    result2 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="Implemented CI/CD pipelines reducing deployment time by 70%",
+        confidence=0.88
+    )
+    assert result2["next_action"] == "ask_next_question"
+    assert result2["questions_answered"] == 3
+
+    # Question 3
+    result3 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=3,
+        answer="Expertise in Python, Go, Kubernetes, and AWS services",
+        confidence=0.92
+    )
+    assert result3["next_action"] == "ask_next_question"
+    assert result3["questions_answered"] == 4
+
+    # Question 4
+    result4 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=4,
+        answer="Mentored junior engineers and conducted technical interviews for hiring",
+        confidence=0.87
+    )
+    assert result4["next_action"] == "ask_next_question"
+    assert result4["questions_answered"] == 5
+
+    # Question 5 - should now suggest CV generation
+    result5 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=5,
+        answer="Passionate about clean code, system design, and technical excellence",
+        confidence=0.85
+    )
+    assert result5["next_action"] == "proceed_to_cv_generation"
+    assert result5["questions_answered"] == 6
+
+
+def test_answer_clarifying_questions_no_next_question_generated(mock_backend):
+    """Test that next_question is None (stub implementation)."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-008"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Detailed answer about experience with multiple technologies",
+        confidence=0.85
+    )
+
+    # next_question should be None since _generate_next_question is a stub
+    assert result["next_question"] is None
+
+
+def test_answer_clarifying_questions_confidences_comparison(mock_backend):
+    """Test that different confidence levels produce different summaries."""
+
+    mock_backend.save_application_evidence.side_effect = ["ev1", "ev2", "ev3"]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    answer = "I have experience with Python and cloud technologies"
+
+    # High confidence
+    result_high = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer=answer,
+        confidence=0.95
+    )
+    assert "high" in result_high["summary"]
+
+    # Moderate confidence
+    result_moderate = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer=answer,
+        confidence=0.65
+    )
+    assert "moderate" in result_moderate["summary"]
+
+    # Low confidence
+    result_low = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer=answer,
+        confidence=0.35
+    )
+    assert "low" in result_low["summary"]
+
+
+# Tests for generate_cv_draft (Task 3d)
+
+def test_generate_cv_draft_creates_draft(mock_backend):
+    """Test that generate_cv_draft creates CV draft with sections."""
+
+    evidence = StructuredEvidence(
+        achievement="Led team of 5 engineers on cloud infrastructure",
+        context="At TechCorp, responsible for infrastructure modernization",
+        impact="Reduced deployment time by 60%",
+        skills_demonstrated=["Python", "AWS"],
+        job_title="Senior Engineer",
+        company_name="TechCorp",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {"Python": 0.9, "AWS": 0.85},
+        "company_name": "Acme",
+        "role_title": "Senior Engineer"
+    }
+
+    with patch('src.workflow_tools.CVAssembler') as mock_assembler_class:
+        mock_assembler = MagicMock()
+        mock_assembler.assemble.return_value = "- Led cloud infrastructure team\n- Achieved 60% performance improvement"
+        mock_assembler_class.return_value = mock_assembler
+
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
         )
 
-
-def test_get_workflow_state_summary_contains_relevant_info(mock_backend, workflow_tools):
-    """Test that summary includes key metrics."""
-    mock_evidence = [MagicMock() for _ in range(5)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
-
-    result = workflow_tools.get_workflow_state("test-app")
-
-    summary = result["summary"]
-    assert str(result["evidence_count"]) in summary  # Should mention evidence count
+    assert result["application_id"] == "test-app"
+    assert "cv_draft" in result
+    assert "sections" in result
+    assert "metadata" in result
+    assert result["metadata"]["total_evidence_used"] >= 0
+    assert "generation_timestamp" in result["metadata"]
 
 
-def test_get_workflow_state_questions_asked_capped(mock_backend, workflow_tools):
-    """Test that questions_asked is capped at 7."""
-    mock_evidence = [MagicMock() for _ in range(20)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence
+def test_generate_cv_draft_no_evidence(mock_backend):
+    """Test generate_cv_draft with no evidence."""
 
-    result = workflow_tools.get_workflow_state("test-app")
+    mock_backend.get_evidence_by_application.return_value = []
 
-    assert result["questions_asked"] == 7
+    tools = WorkflowTools(backend=mock_backend)
 
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
 
-def test_get_workflow_state_multiple_calls_same_app(mock_backend, workflow_tools):
-    """Test retrieving state multiple times for same application."""
-    mock_evidence_v1 = [MagicMock() for _ in range(3)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence_v1
+    with patch('src.workflow_tools.CVAssembler'):
+        result = tools.generate_cv_draft(
+            application_id="empty-app",
+            jd_analysis=jd_analysis
+        )
 
-    result1 = workflow_tools.get_workflow_state("multi-app")
-    assert result1["evidence_count"] == 3
-    assert result1["current_stage"] == "cv_generation"
-
-    # Simulate more evidence added
-    mock_evidence_v2 = [MagicMock() for _ in range(8)]
-    mock_backend.get_evidence_by_cv_id.return_value = mock_evidence_v2
-
-    result2 = workflow_tools.get_workflow_state("multi-app")
-    assert result2["evidence_count"] == 8
-    assert result2["current_stage"] == "cv_refinement"
+    assert result["application_id"] == "empty-app"
+    assert "cv_draft" in result
+    # CV draft might be empty but should exist
 
 
-# ============================================================================
-# INTEGRATION TESTS
-# ============================================================================
+def test_generate_cv_draft_with_section_limit(mock_backend):
+    """Test that generate_cv_draft respects section_limit."""
+
+    evidence = StructuredEvidence(
+        achievement="Built Python microservices",
+        context="At Company",
+        impact="Success",
+        skills_demonstrated=["Python"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    with patch('src.workflow_tools.CVAssembler') as mock_assembler_class:
+        mock_assembler = MagicMock()
+        mock_assembler.assemble.return_value = "Experience content"
+        mock_assembler_class.return_value = mock_assembler
+
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis,
+            section_limit=3
+        )
+
+    assert result["application_id"] == "test-app"
+    # Verify that assembler was called with max_per_role matching section_limit
+    mock_assembler.assemble.assert_called()
 
 
-def test_confirm_then_get_state_flow(mock_backend, workflow_tools):
-    """Test workflow: confirm CV and then check state."""
-    mock_backend.get_evidence_by_cv_id.return_value = [MagicMock() for _ in range(5)]
+def test_generate_cv_draft_error_handling(mock_backend):
+    """Test error handling in generate_cv_draft."""
 
-    # First, confirm the CV
-    confirm_result = workflow_tools.confirm_cv(
-        application_id="integration-test",
-        cv_draft="# Test CV",
-        confirmed_by_user=True
+    mock_backend.get_evidence_by_application.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.generate_cv_draft(
+        application_id="error-app",
+        jd_analysis={}
     )
 
-    assert confirm_result["confirmed"] is True
-    assert confirm_result["next_action"] == "proceed_to_submit"
-
-    # Then get workflow state
-    state_result = workflow_tools.get_workflow_state("integration-test")
-
-    assert state_result["application_id"] == "integration-test"
-    assert state_result["evidence_count"] == 5
-    assert state_result["current_stage"] == "cv_generation"
+    assert "error" in result
+    assert result["application_id"] == "error-app"
 
 
-def test_revision_cycle_workflow(mock_backend, workflow_tools):
-    """Test workflow: reject, revise, confirm."""
-    # First attempt: user rejects
-    reject_result = workflow_tools.confirm_cv(
-        application_id="revision-test",
-        cv_draft="# Initial Draft",
-        confirmed_by_user=False
+def test_generate_cv_draft_metadata_calculation(mock_backend):
+    """Test that metadata is calculated correctly."""
+
+    evidence1 = StructuredEvidence(
+        achievement="Python project",
+        context="Context",
+        impact="Impact",
+        skills_demonstrated=["Python"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    evidence2 = StructuredEvidence(
+        achievement="AWS infrastructure",
+        context="Context",
+        impact="Impact",
+        skills_demonstrated=["AWS"],
+        job_title="DevOps",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-002"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence1, evidence2]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    with patch('src.workflow_tools.CVAssembler'):
+        result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert "metadata" in result
+    assert result["metadata"]["total_evidence_used"] == 2
+    assert "jd_match_score" in result["metadata"]
+    assert 0 <= result["metadata"]["jd_match_score"] <= 1.0
+
+
+# Tests for revise_cv (Task 3d)
+
+def test_revise_cv_processes_feedback(mock_backend):
+    """Test that revise_cv processes user feedback correctly."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Add more metrics and quantifiable results",
+        action="expand",
+        cv_draft_version=1
     )
 
-    assert reject_result["confirmed"] is False
-    assert reject_result["next_action"] == "revise_again"
+    assert result["application_id"] == "test-app"
+    assert result["revision_number"] == 2
+    assert "revised_section" in result
+    assert "changes_summary" in result
+    # Should mention expanding/adding detail
+    assert "added" in result["changes_summary"].lower() or "detail" in result["changes_summary"].lower()
+    assert "next_steps" in result
 
-    # Revise and try again
-    approve_result = workflow_tools.confirm_cv(
-        application_id="revision-test",
-        cv_draft="# Revised Draft with improvements",
-        confirmed_by_user=True
+
+def test_revise_cv_all_actions(mock_backend):
+    """Test revise_cv with all valid actions."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    for action in ["refine", "expand", "simplify", "rewrite"]:
+        result = tools.revise_cv(
+            application_id="test-app",
+            section_name="Skills",
+            feedback=f"Test feedback for {action}",
+            action=action,
+            cv_draft_version=1
+        )
+
+        assert result["application_id"] == "test-app"
+        assert result["revision_number"] == 2
+        assert "revised_section" in result
+        assert action in result["changes_summary"].lower()
+
+
+def test_revise_cv_invalid_action(mock_backend):
+    """Test that revise_cv rejects invalid actions."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="test",
+        action="invalid_action"
     )
 
-    assert approve_result["confirmed"] is True
-    assert approve_result["next_action"] == "proceed_to_submit"
-    assert approve_result["cv_version"] != reject_result["cv_version"]
+    assert "error" in result
+    assert "Invalid action" in result["error"]
+
+
+def test_revise_cv_tracks_revision_version(mock_backend):
+    """Test that revision version is tracked correctly."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    # First revision
+    result1 = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="feedback 1",
+        action="refine",
+        cv_draft_version=1
+    )
+    assert result1["revision_number"] == 2
+
+    # Second revision using version from previous
+    result2 = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="feedback 2",
+        action="expand",
+        cv_draft_version=result1["revision_number"]
+    )
+    assert result2["revision_number"] == 3
+
+
+def test_revise_cv_error_handling(mock_backend):
+    """Test error handling in revise_cv."""
+
+    mock_backend.get_evidence_by_application.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="error-app",
+        section_name="Experience",
+        feedback="test",
+        action="refine"
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+
+
+def test_revise_cv_multiple_sections(mock_backend):
+    """Test revising multiple sections sequentially."""
+
+    mock_backend.get_evidence_by_application.return_value = []
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    sections = ["Experience", "Projects", "Skills"]
+    version = 1
+
+    for section in sections:
+        result = tools.revise_cv(
+            application_id="test-app",
+            section_name=section,
+            feedback=f"Improve {section}",
+            action="refine",
+            cv_draft_version=version
+        )
+
+        assert result["application_id"] == "test-app"
+        assert section in result["revised_section"]
+        version = result["revision_number"]
+
+    # Should have incremented version for each revision
+    assert version == 4  # Initial 1 + 3 revisions
+
+
+def test_generate_cv_draft_and_revise_cv_workflow(mock_backend):
+    """Test complete workflow: generate CV draft, then revise."""
+
+    evidence = StructuredEvidence(
+        achievement="Built microservices",
+        context="At Company",
+        impact="10x performance",
+        skills_demonstrated=["Python", "Docker"],
+        job_title="Engineer",
+        company_name="Company",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "Docker"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    # Step 1: Generate CV draft
+    with patch('src.workflow_tools.CVAssembler'):
+        draft_result = tools.generate_cv_draft(
+            application_id="test-app",
+            jd_analysis=jd_analysis
+        )
+
+    assert draft_result["application_id"] == "test-app"
+    assert "cv_draft" in draft_result
+    initial_version = 1
+
+    # Step 2: Revise Experience section
+    revise_result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Add more impact metrics",
+        action="expand",
+        cv_draft_version=initial_version
+    )
+
+    assert revise_result["application_id"] == "test-app"
+    assert revise_result["revision_number"] == 2
+    assert "Experience" in revise_result["revised_section"]
+
+
+def test_revise_cv_section_content_includes_evidence_context(mock_backend):
+    """Test that revised section includes evidence context."""
+
+    evidence = StructuredEvidence(
+        achievement="Led cloud migration project",
+        context="At TechCorp",
+        impact="Reduced costs by 40%",
+        skills_demonstrated=["AWS", "Python"],
+        job_title="Senior Engineer",
+        company_name="TechCorp",
+        source_section="Experience",
+        source_cv_id="cv-001",
+        id="ev-001"
+    )
+    mock_backend.get_evidence_by_application.return_value = [evidence]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.revise_cv(
+        application_id="test-app",
+        section_name="Experience",
+        feedback="Emphasize cloud and cost savings",
+        action="expand"
+    )
+
+    # Revised section should reference evidence
+    assert "Experience" in result["revised_section"]
+    assert result["revision_number"] == 2

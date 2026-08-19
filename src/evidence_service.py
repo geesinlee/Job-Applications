@@ -234,8 +234,9 @@ You are an expert at analyzing job descriptions and extracting structured requir
 Analyze the following job description and extract:
 1. Explicit skills mentioned (e.g., Python, Kubernetes, SQL)
 2. Inferred skills (implied from context, e.g., "system design" from "building scalable systems")
-3. Critical criteria (must-haves, shown as requirements)
-4. Importance ranking (0-1) for each skill/criterion
+3. Critical criteria (must-haves, shown as hard requirements)
+4. Nice-to-have criteria (preferred but not required)
+5. Importance ranking (0-1) for each skill/criterion
 
 Job Description:
 Company: {company_name}
@@ -248,6 +249,7 @@ Return a JSON object with:
   "explicit_skills": ["skill1", "skill2", ...],
   "inferred_skills": ["inferred1", "inferred2", ...],
   "critical_criteria": ["5+ years experience", "microservices", ...],
+  "nice_to_have_criteria": ["nice1", "nice2", ...],
   "importance_ranking": {{"skill1": 0.9, "skill2": 0.7, ...}}
 }}
 
@@ -271,6 +273,7 @@ Return ONLY the JSON object, no other text.
                 explicit_skills=parsed.get("explicit_skills", []),
                 inferred_skills=parsed.get("inferred_skills", []),
                 critical_criteria=parsed.get("critical_criteria", []),
+                nice_to_have_criteria=parsed.get("nice_to_have_criteria", []),
                 importance_ranking=parsed.get("importance_ranking", {}),
                 company_name=company_name,
                 role_title=role_title,
@@ -287,6 +290,7 @@ Return ONLY the JSON object, no other text.
             explicit_skills=["Python", "System Design", "Kubernetes"],
             inferred_skills=["Distributed Systems", "Microservices"],
             critical_criteria=["5+ years experience", "scalable systems"],
+            nice_to_have_criteria=["Docker", "monitoring", "documentation"],
             importance_ranking={
                 "Python": 0.9,
                 "System Design": 0.85,
