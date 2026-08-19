@@ -86,12 +86,23 @@ class WorkflowTools:
 
             # Step 5: Identify gaps
             matched_skills = set()
+            matched_criteria = set()
             for match in matched:
                 matched_skills.update(match["matched_skills"])
+                # Try to extract criteria names from matched evidence descriptions
+                # This is a heuristic: if matched evidence mentions a criterion, mark it as matched
+                for criterion in jd_analysis.critical_criteria:
+                    if criterion.lower() in match["description"].lower():
+                        matched_criteria.add(criterion)
 
             all_required_skills = jd_analysis.explicit_skills + jd_analysis.inferred_skills
             missing_skills = [s for s in all_required_skills
                               if not any(self._skill_match(s, ms) for ms in matched_skills)]
+
+            # Compute missing criteria: criteria from JD that aren't covered by matched evidence
+            # Include both critical_criteria and nice_to_have_criteria from JD analysis
+            all_jd_criteria = set(jd_analysis.critical_criteria) | set(jd_analysis.nice_to_have_criteria)
+            missing_criteria = list(all_jd_criteria - matched_criteria)
 
             coverage_percentage = (len(matched_skills) / max(len(jd_analysis.explicit_skills), 1)) * 100 if jd_analysis.explicit_skills else 0.0
 
@@ -109,18 +120,17 @@ class WorkflowTools:
                     "explicit_skills": jd_analysis.explicit_skills,
                     "inferred_skills": jd_analysis.inferred_skills,
                     "critical_criteria": jd_analysis.critical_criteria,
-                    "nice_to_have_criteria": [],  # TODO: Extract from JD as separate category
+                    "nice_to_have_criteria": jd_analysis.nice_to_have_criteria,
                     "importance_ranking": jd_analysis.importance_ranking
                 },
                 "initial_matches": matched,
                 "identified_gaps": {
                     "missing_skills": missing_skills,
-                    "missing_criteria": [],  # TODO: Compute from JD criteria not in matches
+                    "missing_criteria": missing_criteria,
                     "coverage_percentage": coverage_percentage
                 },
                 "clarifying_questions": questions,
-                "next_steps": next_steps,
-                "timestamp": datetime.now(timezone.utc).isoformat()
+                "next_steps": next_steps
             }
 
             logger.info(f"Workflow initiated for {application_id}: {coverage_percentage:.1f}% coverage")

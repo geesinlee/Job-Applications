@@ -61,7 +61,8 @@ def test_start_job_application_workflow_initiates_workflow(workflow_tools, mock_
     assert isinstance(result["clarifying_questions"], list)
     assert len(result["clarifying_questions"]) > 0
     assert "next_steps" in result
-    assert "timestamp" in result
+    # Note: per spec, timestamp is only in error responses, not success responses
+    assert "timestamp" not in result
 
 
 def test_start_job_application_workflow_with_no_backend(workflow_tools):
@@ -291,7 +292,8 @@ def test_start_job_application_workflow_full_flow(workflow_tools, mock_backend):
     assert "identified_gaps" in result
     assert "clarifying_questions" in result
     assert "next_steps" in result
-    assert "timestamp" in result
+    # Note: per spec, timestamp is only in error responses, not success responses
+    assert "timestamp" not in result
 
     # Verify content
     jd = result["jd_analysis"]

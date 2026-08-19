@@ -36,9 +36,10 @@ class JDCriteria:
     explicit_skills: list[str]
     inferred_skills: list[str]
     critical_criteria: list[str]
-    importance_ranking: dict[str, float]  # skill/criterion -> importance (0-1)
-    company_name: str
-    role_title: str
+    nice_to_have_criteria: list[str] = field(default_factory=list)
+    importance_ranking: dict[str, float] = field(default_factory=dict)  # skill/criterion -> importance (0-1)
+    company_name: str = ""
+    role_title: str = ""
 
 
 @dataclass
