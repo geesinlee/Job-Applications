@@ -362,7 +362,7 @@ async def phase_a_base_cv_ingestion():
         inserted = 0
         for ev in evidence_list:
             try:
-                structured_ev = await db.structured_evidence.create(
+                structured_ev = await db.structuredevidence.create(
                     data={
                         "achievement": ev["achievement"],
                         "context": ev["context"],
