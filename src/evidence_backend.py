@@ -54,6 +54,16 @@ class EvidenceBackend(ABC):
         pass
 
     @abstractmethod
+    def get_evidence_by_application(self, application_id: str) -> list:
+        """Retrieve all evidence gathered for a specific application."""
+        pass
+
+    @abstractmethod
+    def save_application_evidence(self, app_evidence) -> str:
+        """Save application-scoped evidence, return evidence_id."""
+        pass
+
+    @abstractmethod
     def close(self):
         """Close backend connections gracefully."""
         pass
@@ -66,6 +76,7 @@ class InMemoryEvidenceBackend(EvidenceBackend):
         """Initialize in-memory backend."""
         self.storage: Dict[str, StructuredEvidence] = {}
         self.cv_index: Dict[str, List[str]] = {}
+        self.app_evidence_store: Dict[str, list] = {}  # app_id -> [evidence]
         self._id_counter = 0
 
     def save_evidence(self, evidence: StructuredEvidence) -> str:
@@ -125,6 +136,31 @@ class InMemoryEvidenceBackend(EvidenceBackend):
 
         logger.info(f"Deleted evidence: {evidence_id}")
         return True
+
+    def get_evidence_by_application(self, application_id: str) -> list:
+        """Return evidence for this application."""
+        return self.app_evidence_store.get(application_id, [])
+
+    def save_application_evidence(self, app_evidence) -> str:
+        """Store in-memory."""
+        import uuid
+
+        evidence_id = str(uuid.uuid4())
+
+        if app_evidence.application_id not in self.app_evidence_store:
+            self.app_evidence_store[app_evidence.application_id] = []
+
+        self.app_evidence_store[app_evidence.application_id].append(
+            {
+                "evidence_id": evidence_id,
+                "source": app_evidence.source,
+                "question": app_evidence.question,
+                "response": app_evidence.response,
+                "timestamp": app_evidence.timestamp,
+            }
+        )
+
+        return evidence_id
 
     def close(self):
         """Close backend (no-op for in-memory)."""
@@ -275,6 +311,43 @@ class PostgresEvidenceBackend(EvidenceBackend):
         except Exception as e:
             logger.error(f"Failed to delete evidence {evidence_id}: {e}")
             return self._fallback.delete_evidence(evidence_id)
+
+    def get_evidence_by_application(self, application_id: str) -> list:
+        """Retrieve all evidence linked to this application."""
+        try:
+            if not self._client:
+                return self._fallback.get_evidence_by_application(application_id)
+
+            evidence_records = self._client.structuredevidence.find_many(
+                where={"application_id": application_id}
+            )
+            return evidence_records
+        except Exception:
+            return []  # Fallback on error
+
+    def save_application_evidence(self, app_evidence) -> str:
+        """Save application-scoped evidence to Postgres."""
+        try:
+            if not self._client:
+                # Fallback: return generated ID (evidence not persisted)
+                import uuid
+
+                return str(uuid.uuid4())
+
+            record = self._client.structuredevidence.create(
+                data={
+                    "user_id": "system",  # Or extract from context
+                    "description": app_evidence.response or app_evidence.question or "",
+                    "source_type": app_evidence.source,
+                    "application_id": app_evidence.application_id,
+                    "tags": ["gathered_during_workflow"],
+                }
+            )
+            return record.id
+        except Exception:
+            import uuid
+
+            return str(uuid.uuid4())
 
     def close(self):
         """Close Postgres connection."""

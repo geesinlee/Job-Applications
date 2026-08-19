@@ -8,7 +8,7 @@ Dataclasses for:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 
@@ -49,3 +49,28 @@ class RankedEvidence:
     matched_skills: list[str] = field(default_factory=list)  # skills from JD found in this evidence
     matched_criteria: list[str] = field(default_factory=list)  # critical criteria matched
     suggested_rephrasing: Optional[str] = None
+
+
+@dataclass
+class ApplicationScopedEvidence:
+    """Evidence gathered during a specific job application workflow."""
+
+    evidence_id: str  # Links to permanent StructuredEvidence.id in Postgres
+    application_id: str
+    source: str  # "user_input", "cv_section", "derived"
+    question: Optional[str] = None  # The clarifying question asked (if user_input)
+    response: Optional[str] = None  # User's response (if user_input)
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    added_by_agent: bool = False  # True if agent discovered this, not user
+
+    def to_dict(self) -> dict:
+        """Convert to JSON-serializable dict."""
+        return {
+            "evidence_id": self.evidence_id,
+            "application_id": self.application_id,
+            "source": self.source,
+            "question": self.question,
+            "response": self.response,
+            "timestamp": self.timestamp,
+            "added_by_agent": self.added_by_agent,
+        }

@@ -80,8 +80,12 @@ model StructuredEvidence {
   source_cv_id        String
   source_cv           CVRecord @relation(fields: [source_cv_id], references: [id], onDelete: Cascade)
 
+  // Optional FK to application (allows linking evidence to specific applications)
+  application_id      String?  @db.VarChar(255)
+
   // Indexes
   @@index([source_cv_id])
+  @@index([application_id])
   @@index([job_title])
   @@index([company_name])
   @@index([time_period_start])
