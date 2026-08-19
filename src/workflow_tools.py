@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 from src.evidence_backend import EvidenceBackend
 from src.evidence_service import JDAnalyzer, EvidenceMatcher
-from src.evidence_models import JDCriteria
+from src.evidence_models import JDCriteria, ApplicationScopedEvidence
 
 if TYPE_CHECKING:
     from src.workflow_orchestrator import WorkflowOrchestrator
@@ -393,3 +393,156 @@ class WorkflowTools:
             return f"Moderate coverage ({coverage:.0f}%). Focus: fill critical gaps and discover adjacent experience. {question_count} questions target high-priority skills."
         else:
             return f"Low coverage ({coverage:.0f}%). Focus: discover foundational experience and adjacent skills. {question_count} questions target skill discovery."
+
+    def answer_clarifying_questions(
+        self,
+        application_id: str,
+        question_index: int,
+        answer: str,
+        confidence: Optional[float] = None,
+        skip: Optional[bool] = False
+    ) -> Dict[str, Any]:
+        """
+        Process user answer to a clarifying question and store as evidence.
+
+        Args:
+            application_id: Unique application identifier
+            question_index: Index of the question being answered (0-based)
+            answer: User's answer text
+            confidence: Optional confidence in answer (0.0-1.0)
+            skip: True if user wants to skip this question
+
+        Returns:
+            Dictionary with evidence storage status, next action, and next question (if any)
+        """
+        try:
+            logger.info(f"Processing answer for {application_id}, question {question_index}")
+
+            # Skip question if requested
+            if skip:
+                logger.info(f"Question {question_index} skipped by user")
+                next_action = "ask_next_question"
+                questions_answered = question_index
+                questions_remaining = max(0, 7 - question_index)
+
+                return {
+                    "application_id": application_id,
+                    "evidence_stored": False,
+                    "evidence_id": None,
+                    "next_action": next_action,
+                    "next_question": None,
+                    "summary": f"Skipped question {question_index}. Ready for next question or proceed to CV generation.",
+                    "questions_answered": questions_answered,
+                    "questions_remaining": questions_remaining
+                }
+
+            # Validate answer is not empty
+            if not answer or not answer.strip():
+                logger.warning(f"Empty answer for {application_id}, question {question_index}")
+                return {
+                    "application_id": application_id,
+                    "evidence_stored": False,
+                    "evidence_id": None,
+                    "next_action": "ask_more_clarifications",
+                    "next_question": None,
+                    "summary": "Please provide an answer to continue.",
+                    "questions_answered": question_index,
+                    "questions_remaining": max(0, 7 - question_index)
+                }
+
+            # Store answer as application-scoped evidence
+            evidence = ApplicationScopedEvidence(
+                evidence_id=f"{application_id}-q{question_index}-{datetime.now(timezone.utc).timestamp()}",
+                application_id=application_id,
+                source="user_input",
+                question=None,  # Will be linked via question_index
+                response=answer,
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                added_by_agent=False
+            )
+
+            # Save to backend
+            evidence_id = self.backend.save_application_evidence(evidence)
+            logger.info(f"Evidence stored: {evidence_id} for {application_id}")
+
+            # Determine next action based on answer quality and questions answered
+            next_action = self._determine_next_action(
+                answer=answer,
+                confidence=confidence,
+                question_index=question_index
+            )
+
+            # Generate next question if needed
+            next_question = None
+            if next_action == "ask_next_question" and question_index < 6:
+                next_question = self._generate_next_question(application_id, question_index + 1)
+
+            # Estimate remaining questions
+            questions_answered = question_index + 1
+            questions_remaining = max(0, 7 - questions_answered)
+
+            # Create summary
+            summary = self._create_answer_summary(next_action, confidence, answer)
+
+            result = {
+                "application_id": application_id,
+                "evidence_stored": True,
+                "evidence_id": evidence_id,
+                "next_action": next_action,
+                "next_question": next_question,
+                "summary": summary,
+                "questions_answered": questions_answered,
+                "questions_remaining": questions_remaining
+            }
+
+            logger.info(f"Answer processed for {application_id}: next_action={next_action}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error processing answer for {application_id}: {e}", exc_info=True)
+            return {
+                "error": str(e),
+                "application_id": application_id,
+                "evidence_stored": False
+            }
+
+    def _determine_next_action(
+        self, answer: str, confidence: Optional[float], question_index: int
+    ) -> str:
+        """Determine whether to ask next question or proceed to CV generation."""
+        # If we've asked enough questions (5-7), suggest proceeding
+        if question_index >= 5:
+            return "proceed_to_cv_generation"
+
+        # If answer is substantial (>20 chars) and confidence is high, continue asking
+        if len(answer) > 20 and (confidence is None or confidence >= 0.6):
+            return "ask_next_question"
+
+        # If answer is brief or low confidence, ask for more clarifications
+        if len(answer) <= 20 or (confidence is not None and confidence < 0.6):
+            return "ask_more_clarifications"
+
+        return "ask_next_question"
+
+    def _generate_next_question(self, application_id: str, question_index: int) -> Optional[Dict]:
+        """Generate next clarifying question (stub for now)."""
+        # In a full implementation, this would retrieve existing questions
+        # and generate the next one based on answers so far.
+        # For MVP, return None — the full generate_clarifying_questions
+        # will be called again with updated evidence.
+        return None
+
+    def _create_answer_summary(
+        self, next_action: str, confidence: Optional[float], answer: str
+    ) -> str:
+        """Create a human-readable summary of the answer."""
+        confidence_desc = "high" if confidence and confidence >= 0.8 else \
+                          "moderate" if confidence and confidence >= 0.6 else \
+                          "low" if confidence else "not specified"
+
+        if next_action == "proceed_to_cv_generation":
+            return f"Great response (confidence: {confidence_desc}). You've provided enough detail. Ready to generate CV draft."
+        elif next_action == "ask_more_clarifications":
+            return f"Thanks for the input (confidence: {confidence_desc}). Can you provide more specific details or metrics?"
+        else:
+            return f"Good answer (confidence: {confidence_desc}). Moving to next question."

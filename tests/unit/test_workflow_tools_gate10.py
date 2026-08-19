@@ -559,3 +559,339 @@ def test_generate_clarifying_questions_empty_gaps():
     # Should still generate depth questions even with no gaps
     assert len(result["clarifying_questions"]) > 0
     assert result["application_id"] == "complete-match-app"
+
+
+# Tests for answer_clarifying_questions (Task 3c)
+
+def test_answer_clarifying_questions_stores_evidence(mock_backend):
+    """Test that answer_clarifying_questions stores evidence correctly."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-001"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Led a team of 5 engineers building cloud infrastructure",
+        confidence=0.85
+    )
+
+    assert result["application_id"] == "test-app"
+    assert result["evidence_stored"] is True
+    assert result["evidence_id"] == "ev-new-001"
+    assert result["questions_answered"] == 1
+    assert result["questions_remaining"] == 6
+
+    # Verify backend was called
+    mock_backend.save_application_evidence.assert_called_once()
+
+
+def test_answer_clarifying_questions_skip(mock_backend):
+    """Test that skip action doesn't store evidence."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="",
+        skip=True
+    )
+
+    assert result["evidence_stored"] is False
+    assert result["evidence_id"] is None
+    assert "Skipped" in result["summary"]
+    assert result["next_action"] == "ask_next_question"
+
+    # Backend should NOT be called for skipped questions
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_empty_answer(mock_backend):
+    """Test that empty answer is rejected without storing."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="",
+        confidence=0.5
+    )
+
+    assert result["evidence_stored"] is False
+    assert result["evidence_id"] is None
+    assert result["next_action"] == "ask_more_clarifications"
+    assert "Please provide an answer" in result["summary"]
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_whitespace_answer(mock_backend):
+    """Test that whitespace-only answer is rejected."""
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="   \t\n  ",
+        confidence=0.5
+    )
+
+    assert result["evidence_stored"] is False
+    mock_backend.save_application_evidence.assert_not_called()
+
+
+def test_answer_clarifying_questions_determines_next_action_substantial_answer(mock_backend):
+    """Test next_action for substantial answer with high confidence."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-002"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="I spent 3 years building microservices with Python and Docker, leading a team of engineers",
+        confidence=0.9
+    )
+
+    assert result["next_action"] == "ask_next_question"
+    assert "Good answer" in result["summary"]
+
+
+def test_answer_clarifying_questions_determines_next_action_low_confidence(mock_backend):
+    """Test next_action for low confidence answer."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-003"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="maybe something with Python",
+        confidence=0.3
+    )
+
+    assert result["next_action"] == "ask_more_clarifications"
+    assert "Can you provide more" in result["summary"]
+
+
+def test_answer_clarifying_questions_determines_next_action_brief_answer(mock_backend):
+    """Test next_action for brief answer (<=20 chars)."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-004"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=3,
+        answer="Yes, I did that",  # 16 characters
+        confidence=0.7
+    )
+
+    assert result["next_action"] == "ask_more_clarifications"
+
+
+def test_answer_clarifying_questions_suggest_cv_generation_after_5_questions(mock_backend):
+    """Test that after 5+ questions, suggest proceeding to CV generation."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-005"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=5,  # 6th question (0-based)
+        answer="Lots of relevant experience here with multiple projects",
+        confidence=0.8
+    )
+
+    assert result["next_action"] == "proceed_to_cv_generation"
+    assert "Ready to generate CV" in result["summary"]
+    assert result["questions_answered"] == 6
+    assert result["questions_remaining"] == 1
+
+
+def test_answer_clarifying_questions_suggest_cv_generation_after_6_questions(mock_backend):
+    """Test that after 6 questions, suggest proceeding to CV generation."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-006"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=6,  # 7th question (0-based)
+        answer="Another detailed response about experience",
+        confidence=0.75
+    )
+
+    assert result["next_action"] == "proceed_to_cv_generation"
+    assert result["questions_answered"] == 7
+    assert result["questions_remaining"] == 0
+
+
+def test_answer_clarifying_questions_error_handling(mock_backend):
+    """Test error handling in answer_clarifying_questions."""
+
+    mock_backend.save_application_evidence.side_effect = Exception("DB error")
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="error-app",
+        question_index=0,
+        answer="test answer"
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+    assert result["evidence_stored"] is False
+
+
+def test_answer_clarifying_questions_default_confidence_is_none(mock_backend):
+    """Test that when confidence is None (not provided), it's handled correctly."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-007"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="This is a substantial answer with good details about experience",
+        confidence=None  # Not provided
+    )
+
+    assert result["evidence_stored"] is True
+    assert result["next_action"] == "ask_next_question"
+    assert "not specified" in result["summary"]
+
+
+def test_answer_clarifying_questions_sequence(mock_backend):
+    """Test a sequence of answers progressing toward CV generation."""
+
+    mock_backend.save_application_evidence.side_effect = [
+        "ev-q0-001", "ev-q1-002", "ev-q2-003", "ev-q3-004", "ev-q4-005", "ev-q5-006"
+    ]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    # Question 0
+    result0 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Strong experience with cloud architecture and distributed systems",
+        confidence=0.85
+    )
+    assert result0["next_action"] == "ask_next_question"
+    assert result0["questions_answered"] == 1
+
+    # Question 1
+    result1 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer="Led teams of 3-8 engineers on mission-critical projects",
+        confidence=0.9
+    )
+    assert result1["next_action"] == "ask_next_question"
+    assert result1["questions_answered"] == 2
+
+    # Question 2
+    result2 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer="Implemented CI/CD pipelines reducing deployment time by 70%",
+        confidence=0.88
+    )
+    assert result2["next_action"] == "ask_next_question"
+    assert result2["questions_answered"] == 3
+
+    # Question 3
+    result3 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=3,
+        answer="Expertise in Python, Go, Kubernetes, and AWS services",
+        confidence=0.92
+    )
+    assert result3["next_action"] == "ask_next_question"
+    assert result3["questions_answered"] == 4
+
+    # Question 4
+    result4 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=4,
+        answer="Mentored junior engineers and conducted technical interviews for hiring",
+        confidence=0.87
+    )
+    assert result4["next_action"] == "ask_next_question"
+    assert result4["questions_answered"] == 5
+
+    # Question 5 - should now suggest CV generation
+    result5 = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=5,
+        answer="Passionate about clean code, system design, and technical excellence",
+        confidence=0.85
+    )
+    assert result5["next_action"] == "proceed_to_cv_generation"
+    assert result5["questions_answered"] == 6
+
+
+def test_answer_clarifying_questions_no_next_question_generated(mock_backend):
+    """Test that next_question is None (stub implementation)."""
+
+    mock_backend.save_application_evidence.return_value = "ev-new-008"
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    result = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer="Detailed answer about experience with multiple technologies",
+        confidence=0.85
+    )
+
+    # next_question should be None since _generate_next_question is a stub
+    assert result["next_question"] is None
+
+
+def test_answer_clarifying_questions_confidences_comparison(mock_backend):
+    """Test that different confidence levels produce different summaries."""
+
+    mock_backend.save_application_evidence.side_effect = ["ev1", "ev2", "ev3"]
+
+    tools = WorkflowTools(backend=mock_backend)
+
+    answer = "I have experience with Python and cloud technologies"
+
+    # High confidence
+    result_high = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=0,
+        answer=answer,
+        confidence=0.95
+    )
+    assert "high" in result_high["summary"]
+
+    # Moderate confidence
+    result_moderate = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=1,
+        answer=answer,
+        confidence=0.65
+    )
+    assert "moderate" in result_moderate["summary"]
+
+    # Low confidence
+    result_low = tools.answer_clarifying_questions(
+        application_id="test-app",
+        question_index=2,
+        answer=answer,
+        confidence=0.35
+    )
+    assert "low" in result_low["summary"]
