@@ -12,13 +12,71 @@ datasource db {
 
 model Application {
   id          String     @id @default(uuid())
-  name        String     @unique
+  name        String     @unique  // from tracker.json: application.id
+  company     String              // e.g., "Gartner"
+  roleTitle   String?             // e.g., "Strategic Account Executive"
+  jdPath      String?             // path to JD file in company folder
+  stage       String     @default("new")  // new, applied, screening, interview_r1, interview_r2, interview_r3, offer, rejected
+  folderPath  String?             // NAS path: /mnt/job-app-data/{company} or /mnt/job-app-data/{company}/{role-slug}
+
+  // Workflow state
+  cvFinalized Boolean    @default(false)
+  matchScore  Float?              // Current match against JD (0-1)
+
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
-  cvRecords   CVRecord[]
+  cvRecords         CVRecord[]
+  interviewContexts InterviewContext[]
+  workflowState     WorkflowState?
 
   @@index([name])
+  @@index([company])
+  @@index([stage])
+  @@index([folderPath])
+}
+
+model InterviewContext {
+  id              String   @id @default(cuid())
+  applicationId   String
+  interviewRound  String   // r1, r2, r3, etc.
+  transcriptPath  String?  // path to transcript.md in company/{interview_rN}/
+  notespath       String?  // path to notes.md
+  followUpsPath   String?  // path to follow-ups.md
+
+  // Captured during or after interview
+  questions       String[] // array of interviewer questions
+  keyThemes       String[] // key topics discussed
+  nextSteps       String?  // what's next in process
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([interviewRound])
+}
+
+model WorkflowState {
+  id              String   @id @default(cuid())
+  applicationId   String   @unique
+
+  // Current stage of Gate 10 workflow
+  currentStage    String   // gaps_identified, clarifying, evidence_gathering, cv_draft, cv_review, finalized
+
+  // Gathered evidence during workflow (application-scoped)
+  gatheredEvidence String[] // array of evidence IDs from clarifying questions
+
+  // Pending confirmations/feedback
+  pendingFeedback String?  // user feedback awaiting CV revision
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
 }
 
 model CVRecord {
