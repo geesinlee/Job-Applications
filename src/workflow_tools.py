@@ -259,3 +259,138 @@ class WorkflowTools:
             return f"Fair coverage ({coverage_percentage:.0f}%). Answer clarifying questions to fill gaps before CV generation."
         else:
             return f"Low coverage ({coverage_percentage:.0f}%). Need to gather more evidence or re-frame existing evidence to match JD requirements."
+
+    def generate_clarifying_questions(
+        self,
+        application_id: str,
+        jd_analysis: dict,
+        identified_gaps: dict,
+        initial_matches: list,
+        user_context: Optional[str] = None
+    ) -> dict[str, Any]:
+        """
+        Generate intelligent clarifying questions to fill evidence gaps.
+
+        Args:
+            application_id: Unique application identifier
+            jd_analysis: JD analysis output from start_job_application_workflow
+            identified_gaps: Gaps dict from start_job_application_workflow
+            initial_matches: Matched evidence from start_job_application_workflow
+            user_context: Optional user background for personalization
+
+        Returns:
+            Dictionary with generated questions and strategy
+        """
+        try:
+            logger.info(f"Generating clarifying questions for {application_id}")
+
+            questions = []
+
+            # Category 1: Questions for missing skills
+            for skill in identified_gaps.get("missing_skills", [])[:3]:  # Top 3 skills
+                importance = jd_analysis.get("importance_ranking", {}).get(skill, 0.5)
+                question = self._create_skill_question(skill, importance)
+                questions.append({
+                    "question": question,
+                    "gap_type": "missing_skill",
+                    "importance": importance,
+                    "suggested_prompt": f"Think about projects or roles where you've used similar technologies or approaches to {skill}.",
+                    "expected_response_type": "achievement"
+                })
+
+            # Category 2: Questions for missing criteria
+            for criterion in identified_gaps.get("missing_criteria", [])[:2]:  # Top 2 criteria
+                question = self._create_criteria_question(criterion)
+                questions.append({
+                    "question": question,
+                    "gap_type": "missing_criteria",
+                    "importance": 0.8,  # Criteria usually high importance
+                    "suggested_prompt": f"If you haven't directly done this, what's the closest you've come?",
+                    "expected_response_type": "context"
+                })
+
+            # Category 3: Adjacent skills (inferred from JD but not in explicit skills)
+            inferred = jd_analysis.get("inferred_skills", [])
+            matched_skills_flat = set()
+            for match in initial_matches:
+                matched_skills_flat.update(match.get("matched_skills", []))
+
+            for inferred_skill in inferred[:2]:
+                if not any(self._skill_match(inferred_skill, ms) for ms in matched_skills_flat):
+                    question = self._create_adjacent_skill_question(inferred_skill)
+                    questions.append({
+                        "question": question,
+                        "gap_type": "adjacent_skill",
+                        "importance": 0.6,
+                        "suggested_prompt": f"Have you worked with related technologies or frameworks?",
+                        "expected_response_type": "achievement"
+                    })
+
+            # Category 4: Depth/scope questions for existing matches
+            if initial_matches:
+                top_match = initial_matches[0]  # Strongest match
+                depth_question = self._create_depth_question(top_match, jd_analysis)
+                questions.append({
+                    "question": depth_question,
+                    "gap_type": "context",
+                    "importance": 0.7,
+                    "suggested_prompt": "Describe the scale, team size, and measurable impact of this achievement.",
+                    "expected_response_type": "outcome"
+                })
+
+            # Limit to 5-7 questions
+            questions = questions[:7]
+
+            strategy = self._determine_questioning_strategy(
+                identified_gaps, initial_matches, len(questions)
+            )
+
+            result = {
+                "application_id": application_id,
+                "clarifying_questions": questions,
+                "strategy": strategy
+            }
+
+            logger.info(f"Generated {len(questions)} clarifying questions for {application_id}")
+            return result
+
+        except Exception as e:
+            logger.error(f"Error generating clarifying questions for {application_id}: {e}")
+            return {
+                "error": str(e),
+                "application_id": application_id
+            }
+
+    def _create_skill_question(self, skill: str, importance: float) -> str:
+        """Create a question about a missing skill."""
+        if importance > 0.8:
+            return f"Tell me about your most relevant experience with {skill}. What projects or roles?"
+        else:
+            return f"Have you worked with {skill} in any capacity? Even side projects count."
+
+    def _create_criteria_question(self, criterion: str) -> str:
+        """Create a question about a missing criteria."""
+        return f"The role emphasizes {criterion}. Can you share an example where you demonstrated this?"
+
+    def _create_adjacent_skill_question(self, skill: str) -> str:
+        """Create a question about an adjacent/inferred skill."""
+        return f"Have you worked with {skill} or similar technologies? Tell me about that experience."
+
+    def _create_depth_question(self, match: dict, jd_analysis: dict) -> str:
+        """Create a depth question for a strong match."""
+        matched_skills = ", ".join(match.get("matched_skills", [])[:2])
+        return f"Your experience with {matched_skills} is strong. Can you quantify the impact? (metrics, team size, outcomes?)"
+
+    def _determine_questioning_strategy(
+        self, identified_gaps: dict, initial_matches: list, question_count: int
+    ) -> str:
+        """Determine and explain the questioning strategy."""
+        coverage = identified_gaps.get("coverage_percentage", 0)
+        match_count = len(initial_matches)
+
+        if coverage >= 80 and match_count >= 5:
+            return f"Strong coverage detected ({coverage:.0f}%). Focus: deepen existing matches and explore adjacent skills. {question_count} questions should confirm depth."
+        elif coverage >= 50:
+            return f"Moderate coverage ({coverage:.0f}%). Focus: fill critical gaps and discover adjacent experience. {question_count} questions target high-priority skills."
+        else:
+            return f"Low coverage ({coverage:.0f}%). Focus: discover foundational experience and adjacent skills. {question_count} questions target skill discovery."

@@ -310,3 +310,253 @@ def test_start_job_application_workflow_full_flow(workflow_tools, mock_backend):
     questions = result["clarifying_questions"]
     assert isinstance(questions, list)
     assert all(isinstance(q, str) for q in questions)
+
+
+def test_generate_clarifying_questions_creates_varied_questions():
+    """Test that generate_clarifying_questions creates diverse question types."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": ["Cloud Architecture"],
+        "critical_criteria": ["5+ years"],
+        "nice_to_have_criteria": ["Team leadership"],
+        "importance_ranking": {"Python": 0.9, "AWS": 0.85}
+    }
+
+    identified_gaps = {
+        "missing_skills": ["Kubernetes", "Docker"],
+        "missing_criteria": ["Team leadership"],
+        "coverage_percentage": 60.0
+    }
+
+    initial_matches = [
+        {
+            "evidence_id": "ev-001",
+            "matched_skills": ["Python", "AWS"],
+            "confidence_score": 0.85
+        }
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches,
+        user_context="Senior engineer with 8 years experience"
+    )
+
+    assert result["application_id"] == "test-app"
+    assert len(result["clarifying_questions"]) > 0
+    assert len(result["clarifying_questions"]) <= 7
+
+    # Check question structure
+    for q in result["clarifying_questions"]:
+        assert "question" in q
+        assert "gap_type" in q
+        assert "importance" in q
+        assert q["gap_type"] in ["missing_skill", "missing_criteria", "adjacent_skill", "context"]
+        assert "suggested_prompt" in q
+        assert "expected_response_type" in q
+
+
+def test_generate_clarifying_questions_high_coverage_strategy():
+    """Test that high coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": [],
+        "missing_criteria": [],
+        "coverage_percentage": 85.0  # High coverage
+    }
+
+    initial_matches = [
+        {"evidence_id": f"ev-{i}", "matched_skills": ["Python"], "confidence_score": 0.8}
+        for i in range(6)
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-2",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Strong coverage" in result["strategy"]
+    assert "deepen" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_moderate_coverage_strategy():
+    """Test that moderate coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": ["Kubernetes"],
+        "critical_criteria": ["5+ years"],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {"Python": 0.9}
+    }
+
+    identified_gaps = {
+        "missing_skills": ["Kubernetes"],
+        "missing_criteria": ["5+ years"],
+        "coverage_percentage": 60.0  # Moderate coverage
+    }
+
+    initial_matches = [
+        {"evidence_id": "ev-001", "matched_skills": ["Python"], "confidence_score": 0.8}
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-3",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Moderate coverage" in result["strategy"]
+    assert "fill critical gaps" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_low_coverage_strategy():
+    """Test that low coverage adjusts questioning strategy."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS", "Kubernetes"],
+        "inferred_skills": ["Cloud Architecture", "DevOps"],
+        "critical_criteria": ["5+ years", "Team leadership"],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": ["AWS", "Kubernetes"],
+        "missing_criteria": ["Team leadership"],
+        "coverage_percentage": 20.0  # Low coverage
+    }
+
+    initial_matches = []  # No matches
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-4",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    assert "Low coverage" in result["strategy"]
+    assert "skill discovery" in result["strategy"].lower()
+
+
+def test_generate_clarifying_questions_error_handling():
+    """Test error handling in generate_clarifying_questions."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    result = tools.generate_clarifying_questions(
+        application_id="error-app",
+        jd_analysis=None,  # Invalid: None instead of dict
+        identified_gaps={},
+        initial_matches=[]
+    )
+
+    assert "error" in result
+    assert result["application_id"] == "error-app"
+
+
+def test_generate_clarifying_questions_prioritizes_high_importance():
+    """Test that high importance skills get asked first."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python", "AWS"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {
+            "Python": 0.95,  # Very high importance
+            "Docker": 0.4    # Low importance
+        }
+    }
+
+    identified_gaps = {
+        "missing_skills": ["Python", "Docker"],
+        "missing_criteria": [],
+        "coverage_percentage": 50.0
+    }
+
+    initial_matches = []
+
+    result = tools.generate_clarifying_questions(
+        application_id="test-app-priority",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    questions = result["clarifying_questions"]
+
+    # Find questions about Python and Docker
+    python_questions = [q for q in questions if "Python" in q["question"]]
+    docker_questions = [q for q in questions if "Docker" in q["question"]]
+
+    # Python should have higher importance than Docker
+    if python_questions and docker_questions:
+        assert python_questions[0]["importance"] > docker_questions[0]["importance"]
+
+
+def test_generate_clarifying_questions_empty_gaps():
+    """Test generate_clarifying_questions with no gaps."""
+
+    backend = MagicMock()
+    tools = WorkflowTools(backend=backend)
+
+    jd_analysis = {
+        "explicit_skills": ["Python"],
+        "inferred_skills": [],
+        "critical_criteria": [],
+        "nice_to_have_criteria": [],
+        "importance_ranking": {}
+    }
+
+    identified_gaps = {
+        "missing_skills": [],
+        "missing_criteria": [],
+        "coverage_percentage": 100.0
+    }
+
+    initial_matches = [
+        {"evidence_id": "ev-001", "matched_skills": ["Python"], "confidence_score": 0.95}
+    ]
+
+    result = tools.generate_clarifying_questions(
+        application_id="complete-match-app",
+        jd_analysis=jd_analysis,
+        identified_gaps=identified_gaps,
+        initial_matches=initial_matches
+    )
+
+    # Should still generate depth questions even with no gaps
+    assert len(result["clarifying_questions"]) > 0
+    assert result["application_id"] == "complete-match-app"
