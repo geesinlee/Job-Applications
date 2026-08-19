@@ -39,10 +39,28 @@ _SRC_DIR = Path(__file__).resolve().parent.parent
 BASE_DIR = Path(os.environ.get("JOB_APP_BASE_DIR", str(_SRC_DIR)))
 ARTEFACTS_DIR = Path(os.environ.get("JOB_APP_ARTEFACTS_DIR", str(BASE_DIR)))
 TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
-BASE_CV_PATH = Path(os.environ.get(
-    "JOB_APP_BASE_CV_PATH",
-    str(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md"),
-))
+
+# Base CV path: support auto-detection of MD or PDF in base-cv folder
+_BASE_CV_ENV = os.environ.get("JOB_APP_BASE_CV_PATH")
+if _BASE_CV_ENV:
+    BASE_CV_PATH = Path(_BASE_CV_ENV)
+else:
+    # Auto-detect: check base-cv folder first (new location), then DXC (legacy)
+    base_cv_folder = BASE_DIR / "base-cv"
+    if base_cv_folder.exists():
+        # Look for any .md or .pdf file in base-cv folder
+        for suffix in [".md", ".pdf"]:
+            files = list(base_cv_folder.glob(f"*{suffix}"))
+            if files:
+                BASE_CV_PATH = files[0]  # Use first found
+                break
+        else:
+            # Fallback to legacy DXC location
+            BASE_CV_PATH = Path(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md")
+    else:
+        # Legacy default
+        BASE_CV_PATH = Path(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md")
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost/job_applications")
 
 
@@ -57,8 +75,30 @@ def load_tracker() -> dict:
         return {"schema_version": "1.0", "applications": []}
 
 
+def _extract_pdf_text(pdf_path: Path) -> str:
+    """Extract text from PDF file."""
+    try:
+        import PyPDF2
+    except ImportError:
+        logger.error("PyPDF2 not installed. Install with: pip install PyPDF2")
+        return ""
+
+    try:
+        text = []
+        with open(pdf_path, "rb") as f:
+            pdf_reader = PyPDF2.PdfReader(f)
+            for page in pdf_reader.pages:
+                text.append(page.extract_text())
+        return "\n".join(text)
+    except Exception as e:
+        logger.error(f"Failed to extract text from PDF {pdf_path}: {e}")
+        return ""
+
+
 def parse_base_cv(cv_path: Path) -> list[dict]:
-    """Parse base CV and extract evidence items.
+    """Parse base CV (MD or PDF) and extract evidence items.
+
+    Supports both .md and .pdf files. For PDFs, extracts text first.
 
     Extracts:
     - Work experience (job_title, company_name, dates, description, skills)
@@ -81,7 +121,14 @@ def parse_base_cv(cv_path: Path) -> list[dict]:
         logger.error(f"Base CV not found: {cv_path}")
         return []
 
-    content = cv_path.read_text(encoding="utf-8")
+    # Extract content based on file type
+    if cv_path.suffix.lower() == ".pdf":
+        logger.info(f"Parsing PDF CV: {cv_path}")
+        content = _extract_pdf_text(cv_path)
+    else:
+        logger.info(f"Parsing MD CV: {cv_path}")
+        content = cv_path.read_text(encoding="utf-8")
+
     evidence = []
 
     # Parse markdown sections
