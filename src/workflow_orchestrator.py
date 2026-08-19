@@ -11,18 +11,25 @@ import os
 class WorkflowOrchestrator:
     """Orchestrates job application workflow using LangChain ReAct agent."""
 
-    def __init__(self, model: str = "gemini-flash-latest"):
+    def __init__(self, model: str = None):
         """
         Initialize orchestrator with LLM and empty tools list.
 
         Args:
-            model: Google Generative AI model name
+            model: Google Generative AI model name. Defaults to WORKFLOW_MODEL env var or gemini-flash-latest.
+
+        Raises:
+            ValueError: If GOOGLE_API_KEY is not set in environment.
         """
-        self.model_name = model
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if not api_key:
+            raise ValueError("GOOGLE_API_KEY not set in environment")
+
+        self.model_name = model or os.getenv("WORKFLOW_MODEL", "gemini-flash-latest")
         self.llm = ChatGoogleGenerativeAI(
-            model=model,
+            model=self.model_name,
             temperature=0,  # Deterministic
-            api_key=os.getenv("GOOGLE_API_KEY")
+            api_key=api_key
         )
         self.tools = []
         self.agent_executor = None
@@ -33,6 +40,9 @@ class WorkflowOrchestrator:
 
     def initialize_agent(self) -> None:
         """Create and initialize the ReAct agent with registered tools."""
+        if not self.tools:
+            raise RuntimeError("No tools registered. Call register_tool() first.")
+
         prompt = PromptTemplate.from_template(
             """You are an expert job application workflow orchestrator.
 Your role is to guide users through a deterministic job application workflow:
@@ -60,10 +70,33 @@ Available tools: {tool_names}
             prompt
         )
 
-    def run_workflow(self, task: str):
-        """Execute a workflow step and return results."""
-        if not self.agent_executor:
-            self.initialize_agent()
+    def run_workflow(self, task: str) -> dict:
+        """
+        Execute a workflow step and return results.
 
-        result = self.agent_executor.invoke({"input": task})
-        return result
+        Args:
+            task: Task description/prompt for the workflow agent.
+
+        Returns:
+            dict: Result dict containing agent output or error info.
+                  On success: {"status": "success", "output": ...}
+                  On error: {"status": "error", "error": error_message}
+
+        Raises:
+            RuntimeError: If no tools are registered before workflow execution.
+
+        Note:
+            Agent execution may timeout after extended periods. Callers should
+            implement their own timeout handling if needed.
+        """
+        if not self.tools:
+            raise RuntimeError("No tools registered. Call register_tool() first.")
+
+        try:
+            if not self.agent_executor:
+                self.initialize_agent()
+
+            result = self.agent_executor.invoke({"input": task})
+            return {"status": "success", "output": result}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
