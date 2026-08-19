@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class WorkflowTools:
     """MCP tool implementations for Gate 10 workflow."""
 
-    def __init__(self, backend: Optional[EvidenceBackend] = None, orchestrator: Optional[Any] = None):
+    def __init__(self, backend: Optional[EvidenceBackend] = None, orchestrator: Optional[Any] = None) -> None:
         """Initialize with backend and orchestrator instances."""
         self.backend = backend
         self.orchestrator = orchestrator
@@ -328,7 +328,7 @@ class WorkflowTools:
             # Category 4: Depth/scope questions for existing matches
             if initial_matches:
                 top_match = initial_matches[0]  # Strongest match
-                depth_question = self._create_depth_question(top_match, jd_analysis)
+                depth_question = self._create_depth_question(top_match)
                 questions.append({
                     "question": depth_question,
                     "gap_type": "context",
@@ -375,13 +375,13 @@ class WorkflowTools:
         """Create a question about an adjacent/inferred skill."""
         return f"Have you worked with {skill} or similar technologies? Tell me about that experience."
 
-    def _create_depth_question(self, match: dict, jd_analysis: dict) -> str:
+    def _create_depth_question(self, match: dict[str, Any]) -> str:
         """Create a depth question for a strong match."""
         matched_skills = ", ".join(match.get("matched_skills", [])[:2])
         return f"Your experience with {matched_skills} is strong. Can you quantify the impact? (metrics, team size, outcomes?)"
 
     def _determine_questioning_strategy(
-        self, identified_gaps: dict, initial_matches: list, question_count: int
+        self, identified_gaps: dict[str, Any], initial_matches: list[dict[str, Any]], question_count: int
     ) -> str:
         """Determine and explain the questioning strategy."""
         coverage = identified_gaps.get("coverage_percentage", 0)
