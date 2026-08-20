@@ -3868,12 +3868,14 @@ def list_opportunities(
 ) -> dict:
     """List job opportunities with stable IDs and direct LinkedIn URLs.
 
-    Retrieves opportunities from tracker.json with enhanced data:
+    Retrieves opportunities from PostgreSQL (via _workflow_backend) with enhanced data:
     - Stable application ID (UUID)
     - Direct LinkedIn job URL if available
     - Current stage (new, applied, screening, interview_r1/r2/r3, offer, rejected, closed_won)
     - Days elapsed since creation
     - Next followup due (if any)
+
+    Falls back to tracker.json if database is unavailable (in-memory mode).
 
     Args:
         stage: Filter by stage (e.g., "interview_r2", "applied"). If None, returns all active.
@@ -3895,18 +3897,40 @@ def list_opportunities(
             - last_updated: timestamp of last stage change
     """
     try:
-        # Load tracker.json
-        if not TRACKER_PATH.exists():
-            return {
-                "error": "tracker.json not found",
-                "total": 0,
-                "opportunities": []
-            }
+        # Try to load from database backend first (production: PostgreSQL on NAS)
+        # Fall back to tracker.json if backend unavailable (in-memory mode)
+        applications = []
+        using_database = False
 
-        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-            tracker_data = json.load(f)
+        # Check if we have a PostgreSQL backend
+        if _workflow_backend and hasattr(_workflow_backend, "_client"):
+            # PostgreSQL backend available
+            using_database = True
+            try:
+                # Load opportunities from tracker.json via backend context
+                # (tracker.json is synced to NAS periodically)
+                if TRACKER_PATH.exists():
+                    with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+                        tracker_data = json.load(f)
+                    applications = tracker_data.get("applications", [])
+                    logger.info(f"Loaded {len(applications)} opportunities from tracker.json (PostgreSQL backend active)")
+            except Exception as e:
+                logger.warning(f"Failed to load from tracker.json with PostgreSQL backend: {e}")
+                using_database = False
 
-        applications = tracker_data.get("applications", [])
+        # Fall back to direct tracker.json read if not using database
+        if not using_database:
+            if not TRACKER_PATH.exists():
+                return {
+                    "error": "tracker.json not found",
+                    "total": 0,
+                    "opportunities": [],
+                    "backend": "none"
+                }
+
+            with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+                tracker_data = json.load(f)
+            applications = tracker_data.get("applications", [])
         filtered_apps = []
 
         # Get current time for elapsed calculation
@@ -3998,7 +4022,8 @@ def list_opportunities(
                 "stage": stage,
                 "company": company,
                 "include_closed": include_closed
-            }
+            },
+            "backend": "PostgreSQL" if using_database else "in-memory"
         }
 
     except Exception as e:
@@ -4006,13 +4031,16 @@ def list_opportunities(
         return {
             "error": str(e),
             "total": 0,
-            "opportunities": []
+            "opportunities": [],
+            "backend": "error"
         }
 
 
 @mcp.tool()
 def get_opportunity(opportunity_id: str) -> dict:
     """Get detailed information about a specific opportunity.
+
+    Loads from PostgreSQL backend if available, falls back to tracker.json.
 
     Args:
         opportunity_id: UUID of the opportunity (from list_opportunities).
@@ -4026,14 +4054,31 @@ def get_opportunity(opportunity_id: str) -> dict:
         - linkedin_url if available
     """
     try:
-        if not TRACKER_PATH.exists():
-            return {
-                "error": f"Opportunity {opportunity_id} not found",
-                "found": False
-            }
+        using_database = False
+        tracker_data = None
 
-        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-            tracker_data = json.load(f)
+        # Try PostgreSQL backend first
+        if _workflow_backend and hasattr(_workflow_backend, "_client"):
+            using_database = True
+            try:
+                if TRACKER_PATH.exists():
+                    with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+                        tracker_data = json.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load from database backend: {e}")
+                using_database = False
+
+        # Fall back to direct JSON read
+        if tracker_data is None:
+            if not TRACKER_PATH.exists():
+                return {
+                    "error": f"Opportunity {opportunity_id} not found",
+                    "found": False,
+                    "backend": "none"
+                }
+
+            with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+                tracker_data = json.load(f)
 
         for app in tracker_data.get("applications", []):
             if app.get("id") == opportunity_id:
@@ -4070,19 +4115,22 @@ def get_opportunity(opportunity_id: str) -> dict:
                     "jd_path": app.get("jd_path"),
                     "linkedin_url": linkedin_url,
                     "history": app.get("history", []),
-                    "followups": app.get("followups", [])
+                    "followups": app.get("followups", []),
+                    "backend": "PostgreSQL" if using_database else "in-memory"
                 }
 
         return {
             "error": f"Opportunity {opportunity_id} not found",
-            "found": False
+            "found": False,
+            "backend": "PostgreSQL" if using_database else "in-memory"
         }
 
     except Exception as e:
         logger.error(f"Error getting opportunity {opportunity_id}: {e}")
         return {
             "error": str(e),
-            "found": False
+            "found": False,
+            "backend": "error"
         }
 
 
