@@ -3788,5 +3788,373 @@ def generate_cv_from_jd_with_evidence(
         backend.close()
 
 
+# ---------------------------------------------------------------------------
+# Opportunity Management Tools
+# ---------------------------------------------------------------------------
+
+def _find_opportunity_url(company: str, role_title: str | None, date_created: datetime | None) -> str | None:
+    """Search digest files for LinkedIn URL matching company and role.
+
+    Looks through recent digest files (within 30 days of application creation)
+    to find matching job opportunities and extract their LinkedIn URLs.
+
+    Args:
+        company: Company name to match.
+        role_title: Job title to match (optional, for ambiguous cases).
+        date_created: Application creation date (to scope digest search).
+
+    Returns:
+        LinkedIn job URL if found, None otherwise.
+    """
+    try:
+        digest_dir = ARTEFACTS_DIR / "digests"
+        if not digest_dir.exists():
+            return None
+
+        company_lower = company.lower()
+        role_lower = (role_title or "").lower()
+
+        # Scope digest search to 30 days before and after application date
+        search_start = None
+        search_end = None
+        if date_created:
+            from datetime import timedelta
+            search_start = (date_created - timedelta(days=5)).date()
+            search_end = (date_created + timedelta(days=30)).date()
+
+        # Search recent digests
+        import re
+        url_pattern = re.compile(r'- \*\*URL:\*\* (https://[^\s\)]+)')
+
+        for digest_file in sorted(digest_dir.glob("*.md"), reverse=True):
+            # Parse date from filename (YYYY-MM-DD.md)
+            try:
+                file_date_str = digest_file.stem
+                file_date = datetime.fromisoformat(file_date_str).date()
+                if search_start and search_end:
+                    if not (search_start <= file_date <= search_end):
+                        continue
+            except (ValueError, AttributeError):
+                continue
+
+            # Search this digest for matching company/role
+            try:
+                content = digest_file.read_text(encoding="utf-8")
+                lines = content.split("\n")
+
+                for i, line in enumerate(lines):
+                    # Look for company/role header
+                    if company_lower in line.lower():
+                        # Search nearby lines for URL
+                        search_range = lines[max(0, i): min(len(lines), i + 10)]
+                        for search_line in search_range:
+                            url_match = url_pattern.search(search_line)
+                            if url_match:
+                                return url_match.group(1)
+            except (OSError, UnicodeDecodeError):
+                continue
+
+        return None
+
+    except Exception:
+        return None
+
+
+@mcp.tool()
+def list_opportunities(
+    stage: str | None = None,
+    company: str | None = None,
+    include_closed: bool = False
+) -> dict:
+    """List job opportunities with stable IDs and direct LinkedIn URLs.
+
+    Retrieves opportunities from tracker.json with enhanced data:
+    - Stable application ID (UUID)
+    - Direct LinkedIn job URL if available
+    - Current stage (new, applied, screening, interview_r1/r2/r3, offer, rejected, closed_won)
+    - Days elapsed since creation
+    - Next followup due (if any)
+
+    Args:
+        stage: Filter by stage (e.g., "interview_r2", "applied"). If None, returns all active.
+        company: Filter by company name (case-insensitive substring match).
+        include_closed: If True, include rejected and closed_won opportunities.
+
+    Returns:
+        Dictionary with:
+        - total: count of opportunities matching filters
+        - opportunities: list of opportunity objects with:
+            - id: stable UUID for this application
+            - company: company name
+            - role_title: job title
+            - stage: current stage in pipeline
+            - days_elapsed: days since application created
+            - linkedin_url: direct URL to job posting (if available from jd_path metadata)
+            - next_followup: due date and action (if any)
+            - date_created: ISO timestamp when application was created
+            - last_updated: timestamp of last stage change
+    """
+    try:
+        # Load tracker.json
+        if not TRACKER_PATH.exists():
+            return {
+                "error": "tracker.json not found",
+                "total": 0,
+                "opportunities": []
+            }
+
+        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+            tracker_data = json.load(f)
+
+        applications = tracker_data.get("applications", [])
+        filtered_apps = []
+
+        # Get current time for elapsed calculation
+        now = datetime.now(timezone.utc)
+
+        for app in applications:
+            # Skip closed opportunities unless requested
+            if not include_closed and app.get("stage", "") in ("rejected", "closed_won"):
+                continue
+
+            # Filter by stage
+            if stage and app.get("stage", "") != stage:
+                continue
+
+            # Filter by company (case-insensitive substring)
+            if company and company.lower() not in app.get("company", "").lower():
+                continue
+
+            # Calculate elapsed days
+            date_created_str = app.get("date_created", "")
+            elapsed_days = None
+            if date_created_str:
+                try:
+                    date_created = datetime.fromisoformat(date_created_str.replace("Z", "+00:00"))
+                    elapsed_days = (now - date_created).days
+                except (ValueError, AttributeError):
+                    elapsed_days = None
+
+            # Extract last stage change timestamp
+            last_updated = date_created_str
+            history = app.get("history", [])
+            if history:
+                last_updated = history[-1].get("at", date_created_str)
+
+            # Get JD path
+            jd_path = app.get("jd_path")
+
+            # Generate LinkedIn URL (stable format)
+            # Try to find URL from digests or metadata
+            linkedin_url = None
+            if app.get("metadata", {}).get("linkedin_url"):
+                # URL stored in metadata
+                linkedin_url = app["metadata"]["linkedin_url"]
+            else:
+                # Try to find from digests
+                linkedin_url = _find_opportunity_url(
+                    company=app.get("company"),
+                    role_title=app.get("role_title"),
+                    date_created=datetime.fromisoformat(date_created_str.replace("Z", "+00:00")) if date_created_str else None
+                )
+
+            # Find next followup
+            next_followup = None
+            followups = app.get("followups", [])
+            for followup in followups:
+                if followup.get("status") == "pending":
+                    next_followup = {
+                        "action": followup.get("action_type", "unknown"),
+                        "due_date": followup.get("due_date"),
+                        "id": followup.get("id")
+                    }
+                    break
+
+            opportunity = {
+                "id": app.get("id"),
+                "company": app.get("company"),
+                "role_title": app.get("role_title"),
+                "stage": app.get("stage", "unknown"),
+                "date_created": date_created_str,
+                "last_updated": last_updated,
+                "days_elapsed": elapsed_days,
+                "linkedin_url": linkedin_url,
+                "jd_path": jd_path,
+                "next_followup": next_followup
+            }
+
+            filtered_apps.append(opportunity)
+
+        # Sort by date_created (newest first)
+        filtered_apps.sort(
+            key=lambda x: x["date_created"],
+            reverse=True
+        )
+
+        return {
+            "total": len(filtered_apps),
+            "opportunities": filtered_apps,
+            "filter_applied": {
+                "stage": stage,
+                "company": company,
+                "include_closed": include_closed
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing opportunities: {e}")
+        return {
+            "error": str(e),
+            "total": 0,
+            "opportunities": []
+        }
+
+
+@mcp.tool()
+def get_opportunity(opportunity_id: str) -> dict:
+    """Get detailed information about a specific opportunity.
+
+    Args:
+        opportunity_id: UUID of the opportunity (from list_opportunities).
+
+    Returns:
+        Dictionary with full opportunity details including:
+        - id, company, role_title, stage
+        - full history of stage transitions with timestamps
+        - all followups with status
+        - jd_path pointing to saved job description
+        - linkedin_url if available
+    """
+    try:
+        if not TRACKER_PATH.exists():
+            return {
+                "error": f"Opportunity {opportunity_id} not found",
+                "found": False
+            }
+
+        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+            tracker_data = json.load(f)
+
+        for app in tracker_data.get("applications", []):
+            if app.get("id") == opportunity_id:
+                # Enhance with elapsed time
+                now = datetime.now(timezone.utc)
+                date_created_str = app.get("date_created", "")
+                elapsed_days = None
+                if date_created_str:
+                    try:
+                        date_created = datetime.fromisoformat(date_created_str.replace("Z", "+00:00"))
+                        elapsed_days = (now - date_created).days
+                    except (ValueError, AttributeError):
+                        elapsed_days = None
+
+                # Get LinkedIn URL from metadata or search digests
+                linkedin_url = None
+                if app.get("metadata", {}).get("linkedin_url"):
+                    linkedin_url = app["metadata"]["linkedin_url"]
+                else:
+                    linkedin_url = _find_opportunity_url(
+                        company=app.get("company"),
+                        role_title=app.get("role_title"),
+                        date_created=datetime.fromisoformat(date_created_str.replace("Z", "+00:00")) if date_created_str else None
+                    )
+
+                return {
+                    "found": True,
+                    "id": app.get("id"),
+                    "company": app.get("company"),
+                    "role_title": app.get("role_title"),
+                    "stage": app.get("stage", "unknown"),
+                    "date_created": date_created_str,
+                    "days_elapsed": elapsed_days,
+                    "jd_path": app.get("jd_path"),
+                    "linkedin_url": linkedin_url,
+                    "history": app.get("history", []),
+                    "followups": app.get("followups", [])
+                }
+
+        return {
+            "error": f"Opportunity {opportunity_id} not found",
+            "found": False
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting opportunity {opportunity_id}: {e}")
+        return {
+            "error": str(e),
+            "found": False
+        }
+
+
+@mcp.tool()
+def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
+    """Update the LinkedIn URL for an opportunity.
+
+    Stores the LinkedIn job URL in tracker metadata for quick reference.
+    This enables direct clickable links in list_opportunities output.
+
+    Args:
+        opportunity_id: UUID of the opportunity.
+        linkedin_url: Direct LinkedIn job URL (e.g., linkedin.com/comm/jobs/view/1234567).
+
+    Returns:
+        Dictionary with success status and updated opportunity data.
+    """
+    try:
+        if not TRACKER_PATH.exists():
+            return {
+                "success": False,
+                "error": f"Opportunity {opportunity_id} not found"
+            }
+
+        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
+            tracker_data = json.load(f)
+
+        updated = False
+        for app in tracker_data.get("applications", []):
+            if app.get("id") == opportunity_id:
+                # Initialize metadata if not present
+                if "metadata" not in app:
+                    app["metadata"] = {}
+
+                app["metadata"]["linkedin_url"] = linkedin_url
+                updated = True
+                break
+
+        if not updated:
+            return {
+                "success": False,
+                "error": f"Opportunity {opportunity_id} not found"
+            }
+
+        # Write back to tracker
+        with open(TRACKER_PATH, "w", encoding="utf-8") as f:
+            json.dump(tracker_data, f, indent=2)
+
+        # Sync to NAS if configured
+        if NAS_SYNC_PATH:
+            try:
+                subprocess.run(
+                    ["rsync", "-av", str(TRACKER_PATH), NAS_SYNC_PATH],
+                    check=False,
+                    timeout=10
+                )
+            except Exception:
+                pass  # Non-fatal
+
+        return {
+            "success": True,
+            "opportunity_id": opportunity_id,
+            "linkedin_url": linkedin_url
+        }
+
+    except Exception as e:
+        logger.error(f"Error updating opportunity URL: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+
 if __name__ == "__main__":
     mcp.run(transport="streamable-http" if MCP_MODE == "http" else "stdio")
