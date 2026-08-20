@@ -25,7 +25,7 @@ import subprocess
 import sys
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 
 try:
@@ -3861,21 +3861,25 @@ def _find_opportunity_url(company: str, role_title: str | None, date_created: da
 
 
 @mcp.tool()
-def list_opportunities(
+def list_applied_opportunities(
     stage: str | None = None,
     company: str | None = None,
     include_closed: bool = False
 ) -> dict:
-    """List job opportunities with stable IDs and direct LinkedIn URLs.
+    """List existing job applications you've already applied to.
 
-    Retrieves opportunities from PostgreSQL (via _workflow_backend) with enhanced data:
+    PENDING: Should query PostgreSQL (Application model) instead of tracker.json.
+    Currently reads from tracker.json as source of truth; PostgreSQL schema exists
+    but data migration from tracker.json not yet completed.
+
+    Returns applications with complete status tracking:
     - Stable application ID (UUID)
-    - Direct LinkedIn job URL if available
     - Current stage (new, applied, screening, interview_r1/r2/r3, offer, rejected, closed_won)
     - Days elapsed since creation
     - Next followup due (if any)
+    - Full stage history and followup tracking
 
-    Falls back to tracker.json if database is unavailable (in-memory mode).
+    This is for tracking YOUR applications, not for discovering new opportunities.
 
     Args:
         stage: Filter by stage (e.g., "interview_r2", "applied"). If None, returns all active.
@@ -4032,6 +4036,145 @@ def list_opportunities(
             "error": str(e),
             "total": 0,
             "opportunities": [],
+            "backend": "error"
+        }
+
+
+# Backward compatibility alias (deprecated - use list_applied_opportunities or list_job_discoveries)
+def list_opportunities(
+    stage: str | None = None,
+    company: str | None = None,
+    include_closed: bool = False
+) -> dict:
+    """Deprecated: Use list_applied_opportunities() for applied jobs or list_job_discoveries() for new discoveries."""
+    return list_applied_opportunities(stage=stage, company=company, include_closed=include_closed)
+
+
+@mcp.tool()
+def list_job_discoveries(
+    limit: int | None = None,
+    days_back: int = 1
+) -> dict:
+    """List new job opportunities discovered from LinkedIn feed.
+
+    Returns today's (or recent days') job discoveries from the daily digest,
+    filtered for relevance to your profile. Perfect for AI recommendations
+    and job matching workflows.
+
+    Args:
+        limit: Maximum number of opportunities to return (default: all).
+        days_back: Number of days to look back (default: 1 for today only).
+
+    Returns:
+        Dictionary with:
+        - total: count of job opportunities found
+        - date: digest date (YYYY-MM-DD)
+        - discoveries: list of job objects with:
+            - company: company name
+            - role_title: job title
+            - location: job location
+            - url: direct LinkedIn job URL
+            - category: "surfaced" (relevant) or "below_threshold" (less relevant)
+        - backend: which backend was used (filesystem digest or in-memory)
+    """
+    try:
+        # Parse job discoveries from daily digest files
+        discoveries = []
+        digest_dir = ARTEFACTS_DIR / "digests"
+
+        if not digest_dir.exists():
+            return {
+                "error": "Digest directory not found",
+                "total": 0,
+                "discoveries": [],
+                "backend": "none"
+            }
+
+        # Get today's date and look back
+        today = date.today()
+        target_dates = [today - timedelta(days=i) for i in range(days_back)]
+
+        import re
+
+        for target_date in target_dates:
+            digest_file = digest_dir / f"{target_date.isoformat()}.md"
+            if not digest_file.exists():
+                continue
+
+            try:
+                content = digest_file.read_text(encoding="utf-8")
+                lines = content.split("\n")
+
+                current_section = None  # "surfaced" or "below_threshold"
+                current_job = None
+
+                for line in lines:
+                    # Detect section headers
+                    if line.startswith("## Surfaced for Review"):
+                        current_section = "surfaced"
+                        continue
+                    elif line.startswith("## Below Threshold"):
+                        current_section = "below_threshold"
+                        continue
+                    elif line.startswith("*"):
+                        # Stats line, reset
+                        current_section = None
+                        continue
+
+                    # Parse job entries (### Company — Title)
+                    if line.startswith("### ") and current_section:
+                        if current_job:
+                            discoveries.append(current_job)
+                        current_job = {"category": current_section}
+                        # Parse company and title from header
+                        header = line[4:].strip()
+                        if " — " in header:
+                            company, title = header.split(" — ", 1)
+                            current_job["company"] = company.strip()
+                            current_job["role_title"] = title.strip()
+                        continue
+
+                    # Extract URL and other fields
+                    if current_job:
+                        if line.startswith("- **Location:**"):
+                            current_job["location"] = line.split("**Location:**")[1].strip()
+                        elif line.startswith("- **URL:**"):
+                            url_part = line.split("**URL:**")[1].strip()
+                            current_job["url"] = url_part
+                        elif line.startswith("- **Snippet:**"):
+                            snippet = line.split("**Snippet:**")[1].strip()
+                            if snippet != "N/A":
+                                current_job["snippet"] = snippet
+
+                # Add last job if exists
+                if current_job:
+                    discoveries.append(current_job)
+
+            except Exception as e:
+                logger.warning(f"Failed to parse digest {digest_file}: {e}")
+                continue
+
+        # Apply limit if specified
+        if limit and len(discoveries) > limit:
+            discoveries = discoveries[:limit]
+
+        return {
+            "total": len(discoveries),
+            "discoveries": discoveries,
+            "date": target_dates[0].isoformat() if target_dates else None,
+            "filter_applied": {
+                "limit": limit,
+                "days_back": days_back
+            },
+            "backend": "digest_files"
+        }
+
+    except Exception as e:
+        logger.error(f"Error listing job discoveries: {e}")
+        return {
+            "error": str(e),
+            "total": 0,
+            "discoveries": [],
             "backend": "error"
         }
 
