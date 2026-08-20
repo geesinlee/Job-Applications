@@ -87,6 +87,13 @@ LOCATION_KEYWORDS = {
     "south east asia", "southeast asia",
 }
 
+# Role type blacklist — exclude academic, education, training roles
+ROLE_BLACKLIST = {
+    "lecturer", "professor", "instructor", "tutor", "trainer", "teacher",
+    "academic", "education", "teaching", "training", "course", "faculty",
+    "researcher", "research scientist", "postdoc", "phd", "scholarship",
+}
+
 logger = logging.getLogger("job_digest")
 
 
@@ -278,12 +285,12 @@ def load_prefilter_keywords(reference_cv_path: Path) -> dict:
 
 
 def prefilter_jobs(jobs: list[JobCard], keywords: dict) -> dict:
-    """Apply lightweight keyword pre-filter against Reference CV keywords.
+    """Apply keyword pre-filter against Reference CV keywords and role blacklist.
 
-    A job passes the pre-filter if ANY of:
-      - Title contains a senior/director/VP/partner/head/lead keyword
-      - Location mentions Singapore/APAC
-      - Title or snippet contains a skill or industry keyword
+    A job passes the pre-filter if:
+      - NOT in the role blacklist (academic, education, lecturer, etc.)
+      - AND (title contains a senior/director/VP/partner keyword OR
+             location mentions Singapore/APAC AND (title contains a skill/industry keyword OR has relevant snippet))
 
     Returns {"surfaced": [...], "below_threshold": [...]}.
     """
@@ -301,27 +308,44 @@ def prefilter_jobs(jobs: list[JobCard], keywords: dict) -> dict:
         location_lower = (job.location or "").lower()
         combined_text = f"{title_lower} {snippet_lower} {location_lower}"
 
-        is_surfaced = False
-
-        # Check senior title keywords
-        for kw in senior_titles:
-            if kw in title_lower:
-                is_surfaced = True
+        # Reject blacklisted role types immediately
+        is_blacklisted = False
+        for blacklist_kw in ROLE_BLACKLIST:
+            if blacklist_kw in title_lower:
+                is_blacklisted = True
                 break
 
-        # Check location keywords
-        if not is_surfaced:
+        if is_blacklisted:
+            below_threshold.append(job)
+            continue
+
+        is_surfaced = False
+
+        # Check for senior title keyword (strong signal)
+        has_senior_title = False
+        for kw in senior_titles:
+            if kw in title_lower:
+                has_senior_title = True
+                break
+
+        if has_senior_title:
+            is_surfaced = True
+        else:
+            # No senior title: require location match + skill/industry match
+            has_location = False
             for kw in locations:
                 if kw in location_lower or kw in combined_text:
-                    is_surfaced = True
+                    has_location = True
                     break
 
-        # Check skill/industry keywords
-        if not is_surfaced:
-            for kw in skills | industries:
-                if kw in combined_text:
+            if has_location:
+                has_relevant_skill = False
+                for kw in skills | industries:
+                    if kw in combined_text:
+                        has_relevant_skill = True
+                        break
+                if has_relevant_skill:
                     is_surfaced = True
-                    break
 
         if is_surfaced:
             surfaced.append(job)
@@ -562,19 +586,26 @@ def trash_emails(
 # ---------------------------------------------------------------------------
 
 def _format_digest_email(surfaced: list[JobCard], stats: dict, date_str: str) -> tuple[str, str]:
-    """Format email subject and body for the digest notification."""
+    """Format email subject and body for the digest notification.
+
+    Includes full URLs for each opportunity so user can click directly to apply.
+    """
     surfaced_count = len(surfaced)
     subject = f"Job Discoveries — {date_str}: {surfaced_count} new roles"
 
     lines = [f"Job Discoveries for {date_str}", ""]
 
-    lines.append("🔥 Top Matches:")
     if surfaced:
         for i, job in enumerate(surfaced, 1):
             lines.append(f"{i}. {job.company} — {job.title}")
+            lines.append(f"   Location: {job.location or 'N/A'}")
+            if job.snippet:
+                lines.append(f"   {job.snippet[:100]}...")
+            lines.append(f"   URL: {job.url}")
+            lines.append("")
     else:
-        lines.append("(none)")
-    lines.append("")
+        lines.append("(No relevant roles found today)")
+        lines.append("")
 
     lines.append(
         f"📊 Stats: {stats.get('processed', 0)} processed, "
@@ -583,7 +614,7 @@ def _format_digest_email(surfaced: list[JobCard], stats: dict, date_str: str) ->
         f"{stats.get('already_tracked', 0)} already tracked"
     )
     lines.append("")
-    lines.append(f'Review in Claude Desktop: review_daily_discoveries("{date_str}")')
+    lines.append(f'Full digest with all opportunities: review_daily_discoveries("{date_str}")')
 
     return subject, "\n".join(lines)
 
@@ -634,6 +665,12 @@ def main() -> int:
 
     today = date.today().isoformat()
     _log(f"=== Job digest starting for {today} {'(DRY RUN)' if args.dry_run else ''} ===")
+
+    # Check if digest already sent today (prevent duplicate emails from multiple timer runs)
+    last_run = _read_last_run()
+    if last_run == today and not args.dry_run:
+        _log(f"INFO: Digest already processed for {today} — skipping to prevent duplicates")
+        return 0
 
     # 1. Authenticate with Gmail API
     if not GMAIL_ACCOUNTS_CONFIG:
