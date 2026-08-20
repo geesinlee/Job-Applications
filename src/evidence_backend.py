@@ -230,7 +230,9 @@ class PostgresEvidenceBackend(EvidenceBackend):
 
             self._client = Prisma()
             self._client.connect()
-            logger.info(f"Connected to Postgres: {self.db_url}")
+            # Log connection without exposing password
+            db_host = self.db_url.split('@')[-1] if '@' in self.db_url else 'unknown'
+            logger.info(f"Connected to Postgres: {db_host}")
         except ImportError:
             logger.warning("Prisma not available, using in-memory fallback backend for tests")
             self._client = None
