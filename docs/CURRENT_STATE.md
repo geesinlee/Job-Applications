@@ -1,10 +1,10 @@
 # Current State — Job Applications MCP Server
 
-> Last updated: 2026-08-04. Update this file when implementation status changes.
+> Last updated: 2026-08-21. Update this file when implementation status changes.
 
 ## Version
 
-**v0.3.0** — NAS-shared data paths for multi-host sync (commit `b51d9e1`)
+**v0.4.0** — Postgres-canonical structured state; pi-4 MCP-only runtime
 
 ## Implementation Status
 
@@ -29,18 +29,41 @@
 |------|-------------|--------|
 | 11 | LinkedIn job-alert discovery + Gmail API OAuth | 🔲 Backlog |
 
+## Storage Checkpoint
+
+- NAS PostgreSQL (`192.168.10.109`, user `job-app`) is the canonical store for structured application, profile, and CV metadata.
+- `CanonicalState` contains `tracker`, `profile`, and `cv_records` payloads; pi-4 is the MCP interaction layer.
+- `tracker.json`, `profile.json`, and `cv_records.json` are migration/recovery formats only and are not read or written in production.
+- Application artefacts and interview notes remain on the NAS filesystem.
+
+### Tracker Recovery
+
+- On 2026-08-21, the live tracker was found to contain an incomplete 11-record migration snapshot, including synthetic record `ibm-confluent-001`.
+- Restored from the verified `tracker.json.backup` after preserving the prior live file as `tracker.json.pre-recovery-20260821`.
+- Restored state is 15 applications, 50 history entries, and 19 followups. The IBM record is `a0648e08-5ec1-449b-a7fa-5e4075ee9af4`, titled `Account Executive, Confluent (Kafka) - Banking & Financial Services`, at `interview_r1`.
+- IBM interview notes were preserved at `IBM/account-executive-confluent-kafka-banking-financial-services/interview_notes.md`.
+- Nine historical output paths in the backup are stale or missing and require separate artefact reconciliation.
+
+## MCP Desktop Checkpoint
+
+- The live server endpoint on `/mcp` accepts streamable-HTTP POST requests with direct bearer authentication.
+- Claude Desktop should connect via `mcp-remote` using the same bearer token as the pi-4 service.
+- The existing `.mcp.json` in the repo is a Claude Code-style HTTP config, not the Desktop config file, so it is not sufficient by itself for Claude Desktop.
+- If Desktop tool calls still fail after the service restart, the next place to inspect is the `mcp-remote` proxy session and the Desktop config file in `~/Library/Application Support/Claude/claude_desktop_config.json`.
+
 ## Working Functionality
 
 - **MCP server** running on pi-4 as `job-applications-mcp.service` (HTTP :8086, bearer auth)
-- **Daily digest** via `job-applications-tracker.timer` (07:00, emails overdue follow-ups)
+- **Daily tracker timer** retired; it previously read/wrote JSON and is disabled on pi-4.
 - **24 MCP tools** functional and tested (including `ingest_jd` with `jd_text` parameter, `save_interview_notes`, `mark_submitted`)
-- **Output tracking** — all `save_*` functions record outputs in tracker `outputs` dict
+- **Output tracking** — all `save_*` functions record outputs in the canonical Postgres tracker payload
 - **Submitted folder** — `mark_submitted` snapshots CV/cover letter to `submitted/` subfolder
 - **NAS data storage** at `/mnt/job-app-data` (NFS mount from rv-cloud.local)
 - **Claude Desktop** connects via `mcp-remote` to `gs-pi-4.local:8086/mcp`
 - **Claude Code** connects via HTTP (`.mcp.json` config)
 - **Profile** seeded from DXC CV (10 work experiences, 4 education, 13 skills)
-- **9 tracked applications** (DXC, Databricks, Gartner, Glean, Google, PwC, Salesforce, Tableau, Thoughtworks)
+- **15 tracked applications**, including IBM/Confluent, Snowflake, Accenture, and multiple Databricks roles
+- **PostgreSQL canonical-state and evidence/workflow backends** are active
 
 ## Known Issues
 
@@ -56,13 +79,13 @@
 
 ### MCP-remote proxy failures in Claude Desktop
 
-**Issue:** Tool calls (`update_profile`, `get_application_status`, `update_stage`) intermittently fail with "failed to call tool" errors in Claude Desktop sessions. The MCP server itself is confirmed working (direct HTTP test succeeds with session ID).
+**Issue:** Tool calls previously failed because Tailscale Serve forwarded the public hostname to Work-RAG on port 8087. Work-RAG exposes `GET /mcp`, so Claude's POST received `405 Method Not Allowed` and the fallback SSE request received a non-SSE response.
 
-**Symptoms:** "Failed to call tool" error in Claude Desktop, no corresponding request in pi-4 service logs.
+**Symptoms:** "Failed to call tool" error in Claude Desktop, no corresponding request in pi-4 service logs or a stale proxy session hitting an old transport state.
 
-**Workaround:** Restart Claude Desktop session. The `npx mcp-remote` proxy may lose its session or have connection issues.
+**Fix:** Tailscale Serve now routes `/mcp` to Job Applications on port 8086 and keeps the root path on Work-RAG port 8087. The Job Applications server accepts both `/mcp` and `/` because Tailscale strips the configured path prefix before proxying.
 
-**Status:** Under investigation. The `mcp-remote` npm package may have session handling issues with FastMCP's streamable-http transport.
+**Status:** ✅ Fixed. Server-side routing and direct bearer authentication are verified on pi-4. FastMCP OAuth advertisement was removed because this server has no OAuth client-registration endpoint. A public initialize request using the active service token returns `200 text/event-stream` with a session ID. Claude Desktop's token was aligned with the active service token.
 
 ### JS-rendered job posting URLs
 
@@ -85,6 +108,7 @@
 | `DXC/.venv` committed | A Python 3.14 venv exists inside the DXC company folder (34k+ files). Should be gitignored or removed. | Medium |
 | Company folders untracked | All company folders (DXC/, Glean/, etc.) are untracked in git. They contain CVs and JDs that should be version-controlled or explicitly gitignored. | Medium |
 | `tracker.json` and `profile.json` gitignored | These are runtime data and correctly gitignored, but the Mac copy can diverge from the NAS copy. No sync mechanism exists for the Mac copy. | Low (Mac is transient) |
+| Stale output references | Nine restored tracker output references point to files that are currently missing; reconcile artefacts without deleting application history. | Medium |
 | `weasyprint` not on pi-4 | PDF export requires weasyprint which needs Cairo system deps. Not installed on pi-4 (arm64). PDF export would fail on pi-4. | Low (PDF export typically done on Mac) |
 | No automated backup of NAS data | UGOS Pro snapshots provide some protection, but there's no automated backup strategy beyond the NFS share. | Low (NAS has RAID) |
 | `profile.json` on Mac is minimal | The Mac copy of `profile.json` only has `{"schema_version": "1.0"}` while the NAS copy is fully populated. They're independent copies. | Low (Mac is transient) |
@@ -98,9 +122,9 @@
 | Host | `gs-pi-4` (Tailscale: `100.119.219.90`, LAN: `192.168.10.128`) |
 | SSH | `gs` (not `gslee`) |
 | Service | `job-applications-mcp.service` — active (running) |
-| Timer | `job-applications-tracker.timer` — enabled, fires 07:00 |
+| Timer | `job-applications-tracker.timer` — disabled; MCP service only |
 | Data dir | `/mnt/job-app-data` (NFS from `192.168.10.109`) |
-| Env file | `/home/gs/Projects/Job-Applications/.env` (NAS paths, bearer token) |
+| Env file | `/home/gs/Projects/Job-Applications/.env` (`job-app` DB user, NAS paths, bearer token) |
 | Python | `/home/gs/Projects/Job-Applications/venv/bin/python` |
 
 ### Mac (Development)
@@ -119,12 +143,14 @@
 
 3. **Gitignore company folders** — Decide whether to track company artefact folders in git or explicitly gitignore them (they're currently untracked).
 
-4. **Investigate mcp-remote stability** — Debug the intermittent tool call failures in Claude Desktop.
+4. **Decide what to do with `base-cv-ground-truth`** — Keep it as a bootstrap artifact or fold it into the tracker model.
 
-5. **Remove Glean "Role TBC" stub** — The remaining Glean entry at index 3 has a placeholder role title. Update with actual title or remove if no longer relevant.
+5. **Investigate mcp-remote stability** — Debug the intermittent tool call failures in Claude Desktop.
 
-6. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
+6. **Remove Glean "Role TBC" stub** — The remaining Glean entry at index 3 has a placeholder role title. Update with actual title or remove if no longer relevant.
 
-7. ~~**Deploy `ingest_jd` jd_text enhancement**~~ — ✅ Deployed (commit `60871ea`, pi-4 restarted 2026-08-05). The `jd_text` parameter and `jd_content_too_short` guard are live.
+7. **Sync Mac profile.json** — The Mac copy is empty while NAS is populated. Either point Mac `.env` to NAS mount or accept divergence (Mac is transient).
 
-8. **Fix umask `0177` bug** — Claude Code sessions inherit umask 0177 (should be 0022), breaking mkdir/git/npm. Root cause is Claude Code's process environment, not shell config. Workaround: `umask 0022` at session start.
+8. ~~**Deploy `ingest_jd` jd_text enhancement**~~ — ✅ Deployed (commit `60871ea`, pi-4 restarted 2026-08-05). The `jd_text` parameter and `jd_content_too_short` guard are live.
+
+9. **Fix umask `0177` bug** — Claude Code sessions inherit umask 0177 (should be 0022), breaking mkdir/git/npm. Root cause is Claude Code's process environment, not shell config. Workaround: `umask 0022` at session start.

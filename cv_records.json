@@ -58,5 +58,101 @@
     "approved_by": null,
     "approved_at": null,
     "finalized_at": null
+  },
+  {
+    "cv_id": "753071af-f304-4896-bd74-d3356e057e76",
+    "application_id": "TestCo",
+    "version": "draft_5",
+    "status": "draft",
+    "content": "# Tailored CV\n\nExperience...",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:18Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "cf8f470d-0a04-401d-87f4-216a6783910d",
+    "application_id": "TestCo",
+    "version": "draft_6",
+    "status": "draft",
+    "content": "# Tailored CV\n\nGrew ARR by 40% to $2M SGD region.\n\nLed team of 5 engineers.\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:18Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "53d5c4c3-eb21-43e0-8cda-15f0913501b7",
+    "application_id": "TestCo",
+    "version": "draft_7",
+    "status": "draft",
+    "content": "# Tailored CV\n\nGrew ARR by 40% to $2M SGD region.\n\nLed a cross-functional team.\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:18Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "c9c65947-2189-47bb-b27a-d11982570c98",
+    "application_id": "TestCo",
+    "version": "draft_8",
+    "status": "draft",
+    "content": "# Tailored CV\n\nExperience...",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:18Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "b0cf2851-bf5e-4d3a-9a74-1436ce07a1cf",
+    "application_id": "TrackCo",
+    "version": "draft_2",
+    "status": "draft",
+    "content": "# Tailored CV\n10 years of experience\n$5M ARR\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:21Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "df6aabbc-2125-4c08-9764-3c85be856a19",
+    "application_id": "SubCo",
+    "version": "draft_1",
+    "status": "draft",
+    "content": "# Tailored CV\n$5M ARR\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:21Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "9eb3f9cb-561e-447f-aaf2-8c6dfcd594f2",
+    "application_id": "SubCo",
+    "version": "draft_2",
+    "status": "draft",
+    "content": "# Tailored CV\n$5M ARR\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:21Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
+  },
+  {
+    "cv_id": "916b1547-3a76-40d8-aaef-38dd574a55bb",
+    "application_id": "SubCo",
+    "version": "draft_3",
+    "status": "draft",
+    "content": "# Tailored CV v1\n$5M ARR\n",
+    "evidence_used": [],
+    "created_at": "2026-08-22T06:17:21Z",
+    "approved_by": null,
+    "approved_at": null,
+    "finalized_at": null
   }
 ]

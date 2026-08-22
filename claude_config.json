@@ -1,0 +1,119 @@
+{
+  "mcpServers": {
+    "work-rag": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gs-pi-4.tail210e4f.ts.net",
+        "--header",
+        "Authorization:Bearer fycmUrb-sE8JCeUreoEAvV8OfBlOp8DDW-7ThCk_Pws"
+      ]
+    },
+    "job-applications": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gs-pi-4.tail210e4f.ts.net/mcp",
+        "--header",
+        "Authorization:Bearer bAU6I6d4QtiWbsjVxEnFWapSPoBbRymSV_ngz6cGa3g"
+      ]
+    },
+    "mcp_ai_assistant": {
+      "command": "/Users/gslee/Projects/AI-Assistant/.venv/bin/ai-assistant",
+      "args": [
+        "mcp",
+        "serve"
+      ]
+    },
+    "ai-crm": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://192.168.10.109:8080/mcp",
+        "--header",
+        "Authorization:Bearer _Yr2HZ61P2eZUUMdlUZjGYI73sfdz4OBMw9OYv39UsU",
+        "--allow-http"
+      ]
+    },
+    "contacts": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gs-pi-3.tail210e4f.ts.net:8001/mcp"
+      ]
+    },
+    "google-contacts": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gs-pi-3.tail210e4f.ts.net:8002/mcp"
+      ]
+    },
+    "sgdi": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://gs-pi-3.tail210e4f.ts.net:8003/mcp"
+      ]
+    },
+    "gebiz-tracking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://192.168.10.109:8085/mcp",
+        "--header",
+        "Authorization:Bearer CZOwDRWJLibc94C3wNUhzAheCmMkbNkUcW833oIcOXE",
+        "--allow-http"
+      ]
+    }
+  },
+  "coworkUserFilesPath": "/Users/gslee/Claude",
+  "preferences": {
+    "launchPreviewPersistedWorkspaces": [],
+    "launchPreviewSessionScopedSessions": [],
+    "coworkScheduledTasksEnabled": false,
+    "coworkHipaaRestricted": false,
+    "ccdScheduledTasksEnabled": false,
+    "sidebarMode": "chat",
+    "bypassPermissionsGateByAccount": {
+      "e2b86126-7436-4339-bac4-ab1b16bbc2c8": false
+    },
+    "coworkWebSearchEnabled": true,
+    "coworkModelAutoFallbackByAccount": {
+      "e2b86126-7436-4339-bac4-ab1b16bbc2c8": true
+    },
+    "remoteToolsDeviceName": "macbookair",
+    "epitaxyPrefs": {
+      "starred-local-code-sessions": [],
+      "starred-cowork-spaces": [],
+      "starred-session-groups": [],
+      "dframe-local-slice": {
+        "pinnedOrder": [],
+        "homeProjectsPinnedOrder": []
+      },
+      "dframe-group-scopes": {},
+      "desktop-frame.paneStore.v1": {
+        "state": {
+          "extraPanesByMode": {},
+          "colWeightsByMode": {},
+          "rowSplit": 0.5,
+          "draftNonce": 0
+        },
+        "version": 4
+      },
+      "ccd-sessions-filter": {
+        "state": {
+          "selectedProjects": []
+        },
+        "version": 0
+      }
+    }
+  }
+}

@@ -10,8 +10,8 @@ Deployment:
   - http   : pi-4 gs-pi-4 :8086 (always-on systemd service)
 
 Artefact files (JD.md, CVs, research) live on the NAS share.
-tracker.json and profile.json live on pi-4 local disk, rsynced to NAS
-after every write.
+Structured state is stored in NAS Postgres in production. Artefact files
+(JDs, CVs, research, and interview notes) remain on the NAS filesystem.
 """
 
 import asyncio
@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import asdict
 from collections import Counter
 from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
@@ -41,13 +42,12 @@ except ImportError:
 
 import requests
 from bs4 import BeautifulSoup
+import uvicorn
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.auth.provider import AccessToken, TokenVerifier
-from mcp.server.auth.settings import AuthSettings
 
 from requirement_service import RequirementService
-from cv_versioning_service import CVVersioningService
+from cv_versioning_service import CVVersioningService, CVRecord, CVEvidenceUsage, CVStatus
 from src.evidence_service import (
     CVGenerationService,
     JDAnalyzer,
@@ -79,6 +79,7 @@ BASE_CV_PATH = Path(os.environ.get(
     str(ARTEFACTS_DIR / "DXC" / "CV LEE Gee Sin 2026 - DXC Client Partner Public Sector.md"),
 ))
 NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")   # e.g. gs@rv-cloud.local:/share/job-app-data/
+STORAGE_BACKEND = os.environ.get("JOB_APP_STORAGE_BACKEND", "file").lower()
 MCP_MODE = os.environ.get("MCP_MODE", "stdio")         # "stdio" | "http"
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 
@@ -87,7 +88,7 @@ MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
 # ---------------------------------------------------------------------------
 
 def _startup_validate() -> None:
-    """Verify BASE_DIR exists; initialise tracker.json and profile.json if absent.
+    """Verify BASE_DIR and the configured structured-state backend.
     Exits with code 1 (writing to stderr) if BASE_DIR is missing.
     """
     if not BASE_DIR.is_dir():
@@ -96,6 +97,13 @@ def _startup_validate() -> None:
             "Set JOB_APP_BASE_DIR to a valid path.\n"
         )
         sys.exit(1)
+
+    if STORAGE_BACKEND == "postgres" and not os.environ.get("DATABASE_URL"):
+        sys.stderr.write("[job-applications] ERROR: DATABASE_URL is required when JOB_APP_STORAGE_BACKEND=postgres\n")
+        sys.exit(1)
+
+    if STORAGE_BACKEND == "postgres":
+        return
 
     if not TRACKER_PATH.exists():
         TRACKER_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -130,7 +138,9 @@ def _utc_now() -> str:
 
 
 def _load_tracker() -> dict:
-    """Load tracker.json, returning empty schema on any read error."""
+    """Load canonical tracker state, using Postgres in production."""
+    if STORAGE_BACKEND == "postgres":
+        return _load_postgres_state("tracker", {"schema_version": "1.0", "applications": []})
     try:
         return json.loads(TRACKER_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -138,7 +148,10 @@ def _load_tracker() -> dict:
 
 
 def _save_tracker(data: dict) -> None:
-    """Save tracker.json and rsync to NAS backup (fire-and-forget)."""
+    """Save canonical tracker state, using Postgres in production."""
+    if STORAGE_BACKEND == "postgres":
+        _save_postgres_state("tracker", data)
+        return
     TRACKER_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -147,7 +160,9 @@ def _save_tracker(data: dict) -> None:
 
 
 def _load_profile() -> dict:
-    """Load profile.json, returning empty schema on any read error."""
+    """Load canonical profile state, using Postgres in production."""
+    if STORAGE_BACKEND == "postgres":
+        return _load_postgres_state("profile", {"schema_version": "1.0"})
     try:
         return json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
     except Exception:
@@ -155,7 +170,10 @@ def _load_profile() -> dict:
 
 
 def _save_profile(data: dict) -> None:
-    """Save profile.json and rsync to NAS backup (fire-and-forget)."""
+    """Save canonical profile state, using Postgres in production."""
+    if STORAGE_BACKEND == "postgres":
+        _save_postgres_state("profile", data)
+        return
     PROFILE_PATH.write_text(
         json.dumps(data, indent=2, ensure_ascii=False),
         encoding="utf-8",
@@ -177,6 +195,59 @@ def _nas_sync() -> None:
         )
     except FileNotFoundError:
         pass  # rsync not installed; skip silently
+
+
+def _run_postgres(operation):
+    """Run one Prisma async operation from the server's synchronous tools."""
+    try:
+        from prisma import Prisma
+    except ImportError as exc:
+        raise RuntimeError("postgres_client_unavailable") from exc
+
+    async def wrapped():
+        db = Prisma()
+        await db.connect()
+        try:
+            return await operation(db)
+        finally:
+            await db.disconnect()
+
+    return asyncio.run(wrapped())
+
+
+def _load_postgres_state(state_id: str, default: dict) -> dict:
+    """Read canonical JSON state; never fall back to a stale JSON copy."""
+    async def operation(db):
+        rows = await db.query_raw(
+            'SELECT "payload" FROM "CanonicalState" WHERE "id" = $1',
+            state_id,
+        )
+        return rows[0]["payload"] if rows else None
+
+    payload = _run_postgres(operation)
+    if payload is None:
+        raise RuntimeError(f"canonical_state_missing:{state_id}")
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"canonical_state_invalid:{state_id}")
+    return payload
+
+
+def _save_postgres_state(state_id: str, payload: dict) -> None:
+    """Atomically replace one canonical state payload in Postgres."""
+    async def operation(db):
+        await db.execute_raw(
+            """
+            INSERT INTO "CanonicalState" ("id", "payload", "createdAt", "updatedAt")
+            VALUES ($1, $2::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            ON CONFLICT ("id") DO UPDATE SET
+              "payload" = EXCLUDED."payload",
+              "updatedAt" = CURRENT_TIMESTAMP
+            """,
+            state_id,
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    _run_postgres(operation)
 
 
 def _get_or_create_evidence_service():
@@ -201,6 +272,30 @@ def _get_or_create_evidence_service():
 _cv_service_instance = None
 
 
+class _CanonicalCVBackend:
+    """Persist CV record metadata in the same Postgres state store."""
+
+    def load_cv_records(self):
+        payload = _load_postgres_state("cv_records", {"records": []})
+        records = {}
+        for item in payload.get("records", []):
+            evidence = [CVEvidenceUsage(**entry) for entry in item.pop("evidence_used", [])]
+            item["evidence_used"] = evidence
+            item["status"] = CVStatus(item["status"])
+            record = CVRecord(**item)
+            records[record.cv_id] = record
+        return records
+
+    def save_cv_records(self, records):
+        payload = []
+        for record in records.values():
+            item = asdict(record)
+            item["status"] = record.status.value
+            item["evidence_used"] = [asdict(entry) for entry in record.evidence_used]
+            payload.append(item)
+        _save_postgres_state("cv_records", {"records": payload})
+
+
 def _get_or_create_cv_service():
     """Get or create CVVersioningService singleton.
 
@@ -211,11 +306,18 @@ def _get_or_create_cv_service():
     if _cv_service_instance is None:
         evidence_service = _get_or_create_evidence_service()
         requirement_service = RequirementService(evidence_service)
-        _cv_service_instance = CVVersioningService(
-            requirement_service,
-            evidence_service,
-            cv_records_file=CV_RECORDS_PATH
-        )
+        if STORAGE_BACKEND == "postgres":
+            _cv_service_instance = CVVersioningService(
+                requirement_service,
+                evidence_service,
+                db_backend=_CanonicalCVBackend(),
+            )
+        else:
+            _cv_service_instance = CVVersioningService(
+                requirement_service,
+                evidence_service,
+                cv_records_file=CV_RECORDS_PATH,
+            )
     return _cv_service_instance
 
 
@@ -265,6 +367,39 @@ class AmbiguousRoleError(ValueError):
         self.company = company
         self.roles = roles
         super().__init__(f"Multiple roles at {company}: {roles}")
+
+
+def _relativize_path(path: Path | str) -> str:
+    """Convert an absolute path to a relative path against ARTEFACTS_DIR."""
+    p = Path(path)
+    if not p.is_absolute():
+        return str(p)
+    try:
+        return str(p.relative_to(ARTEFACTS_DIR))
+    except ValueError:
+        return str(p)
+
+
+def _absolutize_path(path_str: str, company: str) -> str:
+    """Convert a relative path back to an absolute path against ARTEFACTS_DIR.
+    Handles legacy absolute paths gracefully by extracting the path from the company folder down.
+    """
+    p = Path(path_str)
+    if not p.is_absolute():
+        return str(ARTEFACTS_DIR / p)
+    
+    # Legacy absolute path detected. Try to salvage it.
+    parts = p.parts
+    try:
+        # Find the company folder in the path parts (case-insensitive)
+        lower_parts = [part.lower() for part in parts]
+        idx = lower_parts.index(company.lower())
+        # Reconstruct path from the company folder downwards
+        rel_parts = parts[idx:]
+        return str(ARTEFACTS_DIR.joinpath(*rel_parts))
+    except ValueError:
+        # If company not found, just return the string as is.
+        return path_str
 
 
 def _resolve_company_folder(
@@ -345,6 +480,8 @@ def _record_output(tracker: dict, company: str, role_title: str | None,
     """
     app = _find_application(tracker, company, role_title)
     if app is not None:
+        if "path" in entry:
+            entry["path"] = _relativize_path(entry["path"])
         app.setdefault("outputs", {}).setdefault(output_type, []).append(entry)
 
 
@@ -408,16 +545,6 @@ def _cancel_followup_emails(app: dict) -> None:
 
 MCP_HTTP_HOST = "0.0.0.0"
 MCP_HTTP_PORT = 8086
-MCP_PUBLIC_HOST = os.environ.get("MCP_PUBLIC_HOST", "localhost")  # externally reachable host:port for OAuth resource metadata
-
-
-class _StaticBearerVerifier(TokenVerifier):
-    """Validates the single shared MCP_AUTH_TOKEN as a static bearer token."""
-
-    async def verify_token(self, token: str) -> AccessToken | None:
-        if MCP_AUTH_TOKEN and token == MCP_AUTH_TOKEN:
-            return AccessToken(token=token, client_id="job-applications-client", scopes=[])
-        return None
 
 
 if MCP_MODE == "http":
@@ -426,13 +553,27 @@ if MCP_MODE == "http":
             "[job-applications] ERROR: MCP_MODE=http requires MCP_AUTH_TOKEN to be set.\n"
         )
         sys.exit(1)
-    _resource_url = f"http://{MCP_PUBLIC_HOST}:{MCP_HTTP_PORT}"
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse
+
+    class _StaticBearerMiddleware(BaseHTTPMiddleware):
+        """Authenticate the shared token without advertising an OAuth server."""
+
+        async def dispatch(self, request, call_next):
+            auth_header = request.headers.get("authorization", "")
+            scheme, _, token = auth_header.partition(" ")
+            if scheme.lower() != "bearer" or token != MCP_AUTH_TOKEN:
+                return JSONResponse(
+                    {"error": "Unauthorized"},
+                    status_code=401,
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            return await call_next(request)
+
     mcp = FastMCP(
         "job-applications",
         host=MCP_HTTP_HOST,
         port=MCP_HTTP_PORT,
-        token_verifier=_StaticBearerVerifier(),
-        auth=AuthSettings(issuer_url=_resource_url, resource_server_url=_resource_url),
     )
 else:
     mcp = FastMCP("job-applications")
@@ -1557,8 +1698,25 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
         result["stage"] = app.get("stage")
         result["date_created"] = app.get("date_created")
         result["followups"] = app.get("followups", [])
-        result["outputs"] = app.get("outputs", {})
-        result["submitted"] = app.get("submitted", {})
+        outputs = app.get("outputs", {})
+        processed_outputs = {}
+        for out_type, entries in outputs.items():
+            processed_outputs[out_type] = []
+            for entry in entries:
+                new_entry = dict(entry)
+                if "path" in new_entry:
+                    new_entry["path"] = _absolutize_path(new_entry["path"], company)
+                processed_outputs[out_type].append(new_entry)
+        result["outputs"] = processed_outputs
+        
+        submitted = app.get("submitted", {})
+        processed_submitted = {}
+        for doc_type, info in submitted.items():
+            new_info = dict(info)
+            if "path" in new_info:
+                new_info["path"] = _absolutize_path(new_info["path"], company)
+            processed_submitted[doc_type] = new_info
+        result["submitted"] = processed_submitted
     else:
         result["tracked"] = False
         result["outputs"] = {}
@@ -3318,7 +3476,7 @@ def mark_submitted(
 
         if app is not None:
             app.setdefault("submitted", {})[doc_type] = {
-                "path": str(dest),
+                "path": _relativize_path(dest),
                 "submitted_at": submitted_at,
             }
 
@@ -3658,53 +3816,6 @@ def get_reference_cv() -> dict:
         return {"error": str(e), "cv_path": str(ref_cv_path)}
 
 
-@mcp.tool()
-def save_tailored_cv(company: str, role_title: str, cv_content: str) -> dict:
-    """Save a tailored CV to the company application folder.
-
-    Stores the generated/tailored CV in the company folder for the role,
-    and optionally generates a Word doc version for direct use.
-
-    Args:
-        company: Target employer name (e.g., 'Gartner')
-        role_title: Role title
-        cv_content: Full CV content (markdown or formatted text)
-
-    Returns:
-        dict with saved_path and word_doc_path (if convertible)
-    """
-    tracker = _load_tracker()
-    try:
-        company_dir = _resolve_company_folder(company, role_title, tracker)
-    except AmbiguousRoleError as e:
-        return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
-
-    company_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save as markdown
-    md_path = company_dir / f"CV_{role_title.replace(' ', '_')}_tailored.md"
-    md_path.write_text(cv_content, encoding="utf-8")
-
-    result = {
-        "ok": True,
-        "company": company,
-        "role_title": role_title,
-        "cv_path": str(md_path),
-        "content_length": len(cv_content)
-    }
-
-    # Try to generate Word doc as well (if pandoc available)
-    try:
-        docx_path = company_dir / f"CV_{role_title.replace(' ', '_')}_tailored.docx"
-        subprocess.run(
-            ["pandoc", str(md_path), "-o", str(docx_path)],
-            check=True,
-            capture_output=True,
-            timeout=10
-        )
-        result["docx_path"] = str(docx_path)
-    except (FileNotFoundError, subprocess.TimeoutExpired, subprocess.CalledProcessError):
-        # pandoc not available or failed; continue without it
         pass
 
     return result
@@ -3868,9 +3979,9 @@ def list_applied_opportunities(
 ) -> dict:
     """List existing job applications you've already applied to.
 
-    PENDING: Should query PostgreSQL (Application model) instead of tracker.json.
-    Currently reads from tracker.json as source of truth; PostgreSQL schema exists
-    but data migration from tracker.json not yet completed.
+    Reads canonical structured state through the configured backend. Production
+    uses the NAS Postgres CanonicalState record; JSON is only used in local
+    file-backend tests.
 
     Returns applications with complete status tracking:
     - Stable application ID (UUID)
@@ -3901,40 +4012,9 @@ def list_applied_opportunities(
             - last_updated: timestamp of last stage change
     """
     try:
-        # Try to load from database backend first (production: PostgreSQL on NAS)
-        # Fall back to tracker.json if backend unavailable (in-memory mode)
-        applications = []
-        using_database = False
-
-        # Check if we have a PostgreSQL backend
-        if _workflow_backend and hasattr(_workflow_backend, "_client"):
-            # PostgreSQL backend available
-            using_database = True
-            try:
-                # Load opportunities from tracker.json via backend context
-                # (tracker.json is synced to NAS periodically)
-                if TRACKER_PATH.exists():
-                    with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-                        tracker_data = json.load(f)
-                    applications = tracker_data.get("applications", [])
-                    logger.info(f"Loaded {len(applications)} opportunities from tracker.json (PostgreSQL backend active)")
-            except Exception as e:
-                logger.warning(f"Failed to load from tracker.json with PostgreSQL backend: {e}")
-                using_database = False
-
-        # Fall back to direct tracker.json read if not using database
-        if not using_database:
-            if not TRACKER_PATH.exists():
-                return {
-                    "error": "tracker.json not found",
-                    "total": 0,
-                    "opportunities": [],
-                    "backend": "none"
-                }
-
-            with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-                tracker_data = json.load(f)
-            applications = tracker_data.get("applications", [])
+        tracker_data = _load_tracker()
+        applications = tracker_data.get("applications", [])
+        using_database = STORAGE_BACKEND == "postgres"
         filtered_apps = []
 
         # Get current time for elapsed calculation
@@ -4200,28 +4280,8 @@ def get_opportunity(opportunity_id: str) -> dict:
         using_database = False
         tracker_data = None
 
-        # Try PostgreSQL backend first
-        if _workflow_backend and hasattr(_workflow_backend, "_client"):
-            using_database = True
-            try:
-                if TRACKER_PATH.exists():
-                    with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-                        tracker_data = json.load(f)
-            except Exception as e:
-                logger.warning(f"Failed to load from database backend: {e}")
-                using_database = False
-
-        # Fall back to direct JSON read
-        if tracker_data is None:
-            if not TRACKER_PATH.exists():
-                return {
-                    "error": f"Opportunity {opportunity_id} not found",
-                    "found": False,
-                    "backend": "none"
-                }
-
-            with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-                tracker_data = json.load(f)
+        tracker_data = _load_tracker()
+        using_database = STORAGE_BACKEND == "postgres"
 
         for app in tracker_data.get("applications", []):
             if app.get("id") == opportunity_id:
@@ -4292,14 +4352,7 @@ def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
         Dictionary with success status and updated opportunity data.
     """
     try:
-        if not TRACKER_PATH.exists():
-            return {
-                "success": False,
-                "error": f"Opportunity {opportunity_id} not found"
-            }
-
-        with open(TRACKER_PATH, "r", encoding="utf-8") as f:
-            tracker_data = json.load(f)
+        tracker_data = _load_tracker()
 
         updated = False
         for app in tracker_data.get("applications", []):
@@ -4318,20 +4371,7 @@ def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
                 "error": f"Opportunity {opportunity_id} not found"
             }
 
-        # Write back to tracker
-        with open(TRACKER_PATH, "w", encoding="utf-8") as f:
-            json.dump(tracker_data, f, indent=2)
-
-        # Sync to NAS if configured
-        if NAS_SYNC_PATH:
-            try:
-                subprocess.run(
-                    ["rsync", "-av", str(TRACKER_PATH), NAS_SYNC_PATH],
-                    check=False,
-                    timeout=10
-                )
-            except Exception:
-                pass  # Non-fatal
+        _save_tracker(tracker_data)
 
         return {
             "success": True,
@@ -4348,4 +4388,35 @@ def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
 
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http" if MCP_MODE == "http" else "stdio")
+    if MCP_MODE == "http":
+        from starlette.routing import Route
+
+        app = mcp.streamable_http_app()
+        app.add_middleware(_StaticBearerMiddleware)
+        patched_routes = []
+        for route in getattr(app, "routes", []):
+            if getattr(route, "path", None) == "/mcp" and hasattr(route, "endpoint"):
+                route_kwargs = {
+                    "endpoint": route.endpoint,
+                    "methods": ["GET", "POST", "OPTIONS", "HEAD"],
+                    "name": getattr(route, "name", None),
+                    "include_in_schema": getattr(route, "include_in_schema", True),
+                }
+                patched_routes.append(Route(route.path, **route_kwargs))
+                # Tailscale Serve strips a path-prefix before proxying, so the
+                # public /mcp endpoint can arrive here as the root path.
+                patched_routes.append(Route("/", **route_kwargs))
+            else:
+                patched_routes.append(route)
+
+        if hasattr(app, "router") and hasattr(app.router, "routes"):
+            app.router.routes[:] = patched_routes
+
+        uvicorn.run(
+            app,
+            host=MCP_HTTP_HOST,
+            port=MCP_HTTP_PORT,
+            log_level=logging.getLogger().level,
+        )
+    else:
+        mcp.run(transport="stdio")

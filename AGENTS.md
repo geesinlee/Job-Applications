@@ -24,8 +24,8 @@ Job-Applications/
 │   ├── job-applications-tracker.service
 │   └── job-applications-tracker.timer
 ├── DXC/ Glean/ Gartner/ ...         # Per-company artefact folders (gitignored)
-├── tracker.json                     # Application state (gitignored)
-└── profile.json                     # Candidate profile (gitignored)
+├── tracker.json                     # Legacy migration/recovery copy only
+└── profile.json                     # Legacy migration/recovery copy only
 ```
 
 ## Technology Stack
@@ -34,7 +34,7 @@ Job-Applications/
 - **MCP framework:** FastMCP >=2.0,<3 (fleet-wide pin)
 - **Key deps:** PyPDF2, requests, beautifulsoup4, markdown, python-docx, weasyprint (PDF export), python-dotenv
 - **Transport:** stdio (Mac dev) or HTTP :8086 with bearer auth (pi-4 production)
-- **Data store:** JSON files (tracker.json, profile.json) — no database
+- **Data store:** NAS PostgreSQL CanonicalState records; NAS filesystem for artefacts
 - **Deployment:** systemd user units on pi-4 (Debian aarch64)
 - **NAS:** NFS mount at `/mnt/job-app-data` for artefact storage
 
@@ -67,13 +67,14 @@ ssh gs@gs-pi-4.local  # then: systemctl --user restart job-applications-mcp.serv
 7. **LinkedIn wins conflicts.** When merging profile data, LinkedIn source always takes precedence. CV values are preserved in `conflicts[]`.
 8. **Cover letter versioning.** Saving a new `Cover_Letter.md` renames the existing one to `Cover_Letter_v{N}.md`.
 9. **Stage machine is strict.** `VALID_TRANSITIONS` dict governs all stage changes. Terminal stages (`accepted`, `rejected`, `withdrawn`) block further transitions.
-10. **fastmcp version pin.** Use `fastmcp>=2.0,<3` — fleet-wide rule, do not change.
+10. **Postgres is canonical in production.** With `JOB_APP_STORAGE_BACKEND=postgres`, tracker/profile/CV metadata are read and written through NAS PostgreSQL. Do not add JSON fallbacks to the production path.
+11. **fastmcp version pin.** Use `fastmcp>=2.0,<3` — fleet-wide rule, do not change.
 
 ## Environment Variables
 
 | Var | Purpose | pi-4 value | Mac default |
 |-----|---------|-----------|-------------|
-| `JOB_APP_BASE_DIR` | Data root | `/mnt/job-app-data` | Script directory |
+| `JOB_APP_BASE_DIR` | NAS artefact root | `/mnt/job-app-data` | Script directory |
 | `JOB_APP_ARTEFACTS_DIR` | Artefact folders root | `/mnt/job-app-data` | Same as BASE_DIR |
 | `JOB_APP_TRACKER_PATH` | tracker.json location | `/mnt/job-app-data/tracker.json` | BASE_DIR/tracker.json |
 | `JOB_APP_PROFILE_PATH` | profile.json location | `/mnt/job-app-data/profile.json` | BASE_DIR/profile.json |
@@ -81,6 +82,7 @@ ssh gs@gs-pi-4.local  # then: systemctl --user restart job-applications-mcp.serv
 | `MCP_MODE` | Transport | `http` | `stdio` |
 | `MCP_AUTH_TOKEN` | Bearer token (HTTP mode) | Set in .env | Not needed |
 | `NAS_SYNC_PATH` | rsync destination (legacy) | Empty (data on NAS directly) | Empty |
+| `JOB_APP_STORAGE_BACKEND` | Structured state backend | `postgres` | `file` for isolated tests |
 
 ## Ingest JD Sources
 
@@ -145,7 +147,7 @@ At the end of substantial development work:
 
 - **Do not** commit `.env`, `tracker.json`, `profile.json`, or `tracker_daily.log` — they are gitignored runtime data.
 - **Do not** modify `VALID_TRANSITIONS` or `VALID_STAGES` without updating the corresponding tests.
-- **Do not** add database dependencies — the project uses JSON files by design.
+- **Do not** reintroduce JSON as a production source of truth. Postgres is canonical; JSON is only a migration/recovery format or local test backend.
 - **Do not** split `job_applications_mcp_server.py` into a package without rewriting `conftest.py` imports.
 - **Do not** hardcode absolute paths — use env vars with `__file__`-relative defaults.
 - **Do not** fabricate, invent, or embellish experience, skills, or credentials in any document generation tool.

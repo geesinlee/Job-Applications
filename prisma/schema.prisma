@@ -10,6 +10,15 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Canonical structured state for the MCP server. The payload preserves the
+// existing tracker/profile shape while Postgres becomes the only writer.
+model CanonicalState {
+  id        String   @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Application {
   id          String     @id @default(uuid())
   name        String     @unique  // from tracker.json: application.id
@@ -29,11 +38,43 @@ model Application {
   cvRecords         CVRecord[]
   interviewContexts InterviewContext[]
   workflowState     WorkflowState?
+  history           ApplicationHistory[]  // stage transition history from tracker.json
+  followups         ApplicationFollowup[]  // action items and followups from tracker.json
 
   @@index([name])
   @@index([company])
   @@index([stage])
   @@index([folderPath])
+}
+
+model ApplicationHistory {
+  id              String   @id @default(cuid())
+  applicationId   String
+  stage           String   // stage name when this transition occurred
+  transitionAt    DateTime // when the stage change happened
+  createdAt       DateTime @default(now())
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([transitionAt])
+}
+
+model ApplicationFollowup {
+  id              String   @id @default(cuid())
+  applicationId   String
+  actionType      String   // e.g., "send_follow_up_email", "schedule_call"
+  dueDate         String   // ISO date string (YYYY-MM-DD)
+  status          String   // pending, completed, cancelled
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([dueDate])
 }
 
 model InterviewContext {

@@ -2,7 +2,11 @@
 
 ## System Overview
 
-A single-file Python/FastMCP server that orchestrates the job-application lifecycle. Claude (the AI) calls MCP tools; the server manages state and prepares context. Deployed as an always-on HTTP service on a Raspberry Pi 4, with artefact storage on a NAS.
+A single-file Python/FastMCP server that orchestrates the job-application lifecycle. Claude calls MCP tools; the pi-4 provides only this interaction layer. Structured state is canonical in NAS PostgreSQL; application artefacts and interview notes remain on the NAS filesystem.
+
+## Canonical Storage (2026-08-21)
+
+Production uses `JOB_APP_STORAGE_BACKEND=postgres`. The `CanonicalState` table stores the existing `tracker`, `profile`, and `cv_records` payload shapes so application stages, history, follow-ups, outputs, profile data, and CV metadata are read and written through Postgres. JSON files are migration/recovery formats only. The legacy daily JSON tracker timer is disabled on pi-4.
 
 ```mermaid
 graph TB

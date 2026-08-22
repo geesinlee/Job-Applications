@@ -153,3 +153,19 @@ Documented architectural and implementation decisions. Inferred decisions are ma
 **Rationale:** Consistent error handling makes it easy for Claude to check `ok` and branch on error codes. Raising exceptions would produce unstructured error messages.
 
 **Inferred:** No. Stated in design doc §Error Handling.
+
+### IMP-8: MCP public path compatibility
+
+**Decision:** Keep Job Applications on local port 8086, expose it through the pi-4 Tailscale Serve `/mcp` path, and register a root-path alias in the HTTP app.
+
+**Rationale:** Tailscale Serve strips a configured path prefix before forwarding. The alias allows the FastMCP streamable-HTTP handler to work through the public `/mcp` route while preserving Work-RAG at the hostname root and avoiding a Claude Desktop configuration change.
+
+**Inferred:** Yes. Verified against the live pi-4 route on 2026-08-21.
+
+### IMP-9: Postgres is canonical for structured application state
+
+**Decision:** NAS PostgreSQL is the canonical store for structured application state. The MCP service on pi-4 is the interaction layer only. `CanonicalState` preserves the existing tracker/profile/CV JSON shapes inside Postgres so the tool contract can remain stable while eliminating JSON as a production source.
+
+**Rationale:** The earlier normalized migration snapshot omitted newer applications and introduced a synthetic IBM/Confluent record. A controlled import from the verified recovery state preserves the complete record set, while the MCP read/write helpers now fail closed rather than falling back to stale JSON. Artefact files remain on NAS and are not duplicated into the pi service.
+
+**Inferred:** No. Explicitly requested and implemented on 2026-08-21.

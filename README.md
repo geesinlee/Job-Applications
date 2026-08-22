@@ -14,7 +14,7 @@ AI-CRM, Contact-Cleanup, GeBiz-Awards).
 | Tool | Description |
 |------|-------------|
 | `create_application` | Create company folder, parse JD (PDF/Markdown), set up tracking (legacy alias, no tracker record) |
-| `ingest_jd` | Ingest a JD from file or URL; creates/updates the `tracker.json` record and extracts structured fields |
+| `ingest_jd` | Ingest a JD from file or URL; creates/updates the canonical Postgres application state and extracts structured fields |
 | `get_application_status` | Check which workflow steps are completed for a company/role |
 | `update_stage` | Advance a tracked application to a new pipeline stage (validates transitions, auto-creates/cancels follow-ups) |
 | `list_applications` | List tracked applications, optionally filtered by company and/or stage |
@@ -25,8 +25,8 @@ AI-CRM, Contact-Cleanup, GeBiz-Awards).
 
 | Tool | Description |
 |------|-------------|
-| `update_profile` | Seed or update `profile.json` from a CV file or freeform session notes |
-| `refresh_profile_from_linkedin` | Merge a LinkedIn export (URL, file, or pasted text) into `profile.json`; LinkedIn wins conflicts |
+| `update_profile` | Seed or update the canonical Postgres profile from a CV file or freeform session notes |
+| `refresh_profile_from_linkedin` | Merge a LinkedIn export into the canonical Postgres profile; LinkedIn wins conflicts |
 | `get_profile_summary` | Condensed profile view: current role, years of experience, top skills, education |
 
 ### Match scoring, gaps, learning
@@ -103,14 +103,13 @@ profile.json                           # Candidate profile (gitignored)
 - **pi-4 is the always-on host.** `job-applications-mcp.service` runs the
   server in `MCP_MODE=http` on `0.0.0.0:8086`, bearer-token authenticated
   (`MCP_AUTH_TOKEN`).
-- **Data lives on the NAS** (`rv-cloud.local:/share/job-app-data`) via NFS
-  mount at `/mnt/job-app-data` on pi-4 (and optionally on the Mac). Both
-  `JOB_APP_BASE_DIR` and `JOB_APP_ARTEFACTS_DIR` point to this mount, so
-  `tracker.json`, `profile.json`, and all company artefact folders are
-  consistent regardless of which host runs the server. The `NAS_SYNC_PATH`
-  env var is no longer needed — data is written directly to the NAS.
-- **`job-applications-tracker.timer`** fires `tracker_daily.py` daily at
-  07:00 on pi-4: flags overdue follow-ups and emails a digest to `DIGEST_EMAIL`
+- **Structured state lives in NAS Postgres** (`rv-cloud.local`, database user
+  `job-app`) through the `CanonicalState` table. Artefact folders, JDs, CVs,
+  and interview notes remain on the NAS filesystem at `/mnt/job-app-data`.
+- **`tracker.json`, `profile.json`, and `cv_records.json`** are legacy
+  migration/recovery formats only; production pi-4 does not read or write them.
+- **`job-applications-tracker.timer`** is retired; pi-4 provides only the MCP
+  service for Claude Desktop.
   via `smtplib`/`GMAIL_APP_PASSWORD` (skips sending if unset).
 - **The Mac is transient — it runs no always-on services.** The Mac's Claude
   Code session talks to pi-4 over HTTP; see `.mcp.json`'s `job-applications`

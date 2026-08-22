@@ -20,3 +20,6 @@ gmail_accounts.json
 
 # Job digest log
 job_digest.log
+
+# Reviewable archive for obsolete migration/recovery artefacts
+temp-trash/

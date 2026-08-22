@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Job Applications — daily tracker digest job.
 
-Standalone script (stdlib only, no FastMCP). Intended to run on pi-4 via
-`job-applications-tracker.timer` (daily 07:00, see design.md § pi-4 Systemd
-Units). Independent of the MCP server process and any Mac/Claude session.
+Standalone script (stdlib only, no FastMCP). The historical
+`job-applications-tracker.timer` is retired in production because it writes
+JSON state. It remains available only for isolated file-backend tests and
+recovery work.
 
 Steps:
   1. Load tracker.json
@@ -173,6 +174,9 @@ def _log(message: str) -> None:
 
 
 def main() -> int:
+    if os.environ.get("JOB_APP_STORAGE_BACKEND", "file").lower() == "postgres":
+        print("tracker_daily.py is disabled for Postgres-canonical deployments; use the MCP service.", file=sys.stderr)
+        return 2
     today = date.today().isoformat()
     tracker = _load_tracker(TRACKER_PATH)
 
