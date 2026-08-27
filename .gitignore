@@ -1,0 +1,58 @@
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.env
+tracker.json
+tracker.json.bak-*
+profile.json
+cv_records.json
+tracker_daily.log
+.job_digest_last_run
+
+# Job digest output files
+digests/
+
+# Gmail OAuth2 credentials
+creds/
+client_secret_*.json
+
+# Gmail account config
+gmail_accounts.json
+
+# Job digest log
+job_digest.log
+
+# Reviewable archive for obsolete migration/recovery artefacts
+temp-trash/
+
+# Tenant-owned runtime data and application artefacts. Top-level directories
+# are ignored by default; source directories are explicitly allowlisted below.
+/*/
+!/.agents/
+!/data/
+!/deploy/
+!/docs/
+!/prisma/
+!/scripts/
+!/src/
+!/tests/
+data/*
+!data/.gitkeep
+artefacts/
+
+# Local client configuration and imported files
+claude_config.json
+.agents/mcp_config.json
+docs/GMAIL_OAUTH_REAUTHENTICATION.md
+
+# Local planning and handoff material
+HANDOFF.md
+GATE_6_7_8_SESSION_SUMMARY.md
+docs/superpowers/
+docs/release-career-evidence/
+docs/MCP_QUICK_REFERENCE.md
+docs/MCP_TOOLS_DEPLOYMENT.md
+
+# Cross-project working notes; not part of the Job-Applications release
+scratch/

@@ -1,0 +1,17 @@
+[Unit]
+Description=Job Applications AI-Assistant Orchestration Consumer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Projects/Job-Applications
+ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
+          orchestration_consumer.py
+Environment=JOB_APP_STORAGE_BACKEND=postgres
+EnvironmentFile=-%h/.config/job-applications/env
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

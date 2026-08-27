@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "job-applications": {
+      "serverUrl": "http://localhost:8086/mcp",
+      "headers": {
+        "Authorization": "Bearer ${MCP_AUTH_TOKEN}"
+      }
+    }
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "job-applications": {
+      "type": "http",
+      "url": "${JOB_APP_MCP_URL}",
+      "headers": {
+        "Authorization": "Bearer ${MCP_AUTH_TOKEN}"
+      }
+    }
+  }
+}

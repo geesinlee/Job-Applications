@@ -1,0 +1,17 @@
+[Unit]
+Description=Job Applications MCP Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/Job-Applications
+ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
+          job_applications_mcp_server.py
+Environment=MCP_MODE=http
+Environment=JOB_APP_STORAGE_BACKEND=postgres
+EnvironmentFile=-%h/.config/job-applications/env
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

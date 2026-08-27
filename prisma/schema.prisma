@@ -1,0 +1,192 @@
+// CV Versioning Service Data Model
+// Defines CVRecord, CVEvidenceUsage, and Application for PostgreSQL storage
+
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Canonical structured state for the MCP server. The payload preserves the
+// existing tracker/profile shape while Postgres becomes the only writer.
+model CanonicalState {
+  id        String   @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Application {
+  id          String     @id @default(uuid())
+  name        String     @unique  // from tracker.json: application.id
+  company     String              // e.g., "Example Company"
+  roleTitle   String?             // e.g., "Strategic Account Executive"
+  jdPath      String?             // path to JD file in company folder
+  stage       String     @default("new")  // new, applied, screening, interview_r1, interview_r2, interview_r3, offer, rejected
+  folderPath  String?             // Persistent path: {artefacts}/{company} or {artefacts}/{company}/{role-slug}
+
+  // Workflow state
+  cvFinalized Boolean    @default(false)
+  matchScore  Float?              // Current match against JD (0-1)
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  cvRecords         CVRecord[]
+  interviewContexts InterviewContext[]
+  workflowState     WorkflowState?
+  history           ApplicationHistory[]  // stage transition history from tracker.json
+  followups         ApplicationFollowup[]  // action items and followups from tracker.json
+
+  @@index([name])
+  @@index([company])
+  @@index([stage])
+  @@index([folderPath])
+}
+
+model ApplicationHistory {
+  id              String   @id @default(cuid())
+  applicationId   String
+  stage           String   // stage name when this transition occurred
+  transitionAt    DateTime // when the stage change happened
+  createdAt       DateTime @default(now())
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([transitionAt])
+}
+
+model ApplicationFollowup {
+  id              String   @id @default(cuid())
+  applicationId   String
+  actionType      String   // e.g., "send_follow_up_email", "schedule_call"
+  dueDate         String   // ISO date string (YYYY-MM-DD)
+  status          String   // pending, completed, cancelled
+  completedAt     DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([dueDate])
+}
+
+model InterviewContext {
+  id              String   @id @default(cuid())
+  applicationId   String
+  interviewRound  String   // r1, r2, r3, etc.
+  transcriptPath  String?  // path to transcript.md in company/{interview_rN}/
+  notespath       String?  // path to notes.md
+  followUpsPath   String?  // path to follow-ups.md
+
+  // Captured during or after interview
+  questions       String[] // array of interviewer questions
+  keyThemes       String[] // key topics discussed
+  nextSteps       String?  // what's next in process
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([interviewRound])
+}
+
+model WorkflowState {
+  id              String   @id @default(cuid())
+  applicationId   String   @unique
+
+  // Current stage of Gate 10 workflow
+  currentStage    String   // gaps_identified, clarifying, evidence_gathering, cv_draft, cv_review, finalized
+
+  // Gathered evidence during workflow (application-scoped)
+  gatheredEvidence String[] // array of evidence IDs from clarifying questions
+
+  // Pending confirmations/feedback
+  pendingFeedback String?  // user feedback awaiting CV revision
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+}
+
+model CVRecord {
+  id              String     @id @default(uuid())
+  cvId            String     @unique
+  applicationId   String
+  version         String     // draft_1, draft_2, final, etc.
+  status          String     // draft | approved | final
+  content         String     @db.Text
+  createdAt       DateTime   @default(now())
+  approvedBy      String?
+  approvedAt      DateTime?
+  finalizedAt     DateTime?
+
+  evidence        CVEvidenceUsage[]
+  evidenceExtracted StructuredEvidence[]
+  application     Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([cvId])
+}
+
+model CVEvidenceUsage {
+  id              String     @id @default(uuid())
+  cvRecordId      String
+  evidenceId      String
+  requirementId   String
+  contentExcerpt  String     @db.Text
+  placementSection String
+
+  record          CVRecord   @relation(fields: [cvRecordId], references: [id], onDelete: Cascade)
+
+  @@index([cvRecordId])
+  @@index([evidenceId])
+  @@index([requirementId])
+}
+
+model StructuredEvidence {
+  id                  String   @id @default(cuid())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  // Evidence content
+  achievement         String   @db.Text
+  context             String   @db.Text
+  impact              String   @db.Text
+  skills_demonstrated String[] // array of skill strings; stored as JSON in Postgres
+
+  // Metadata
+  job_title           String
+  company_name        String
+  time_period_start   DateTime?
+  time_period_end     DateTime?
+  source_section      String   // e.g., "Experience", "Projects", "Skills"
+
+  // Foreign key to source ground-truth CV
+  source_cv_id        String
+  source_cv           CVRecord @relation(fields: [source_cv_id], references: [id], onDelete: Cascade)
+
+  // Optional FK to application (allows linking evidence to specific applications)
+  application_id      String?  @db.VarChar(255)
+
+  // Indexes
+  @@index([source_cv_id])
+  @@index([application_id])
+  @@index([job_title])
+  @@index([company_name])
+  @@index([time_period_start])
+  @@index([time_period_end])
+}

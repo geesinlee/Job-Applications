@@ -1,0 +1,10 @@
+[Unit]
+Description=Job Applications Daily Job Digest Run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/Job-Applications
+ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
+          job_digest.py
+EnvironmentFile=-%h/.config/job-applications/env

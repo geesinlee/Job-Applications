@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "job-applications": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://job-applications.example.com/mcp",
+        "--header",
+        "Authorization:Bearer ${MCP_AUTH_TOKEN}"
+      ]
+    }
+  }
+}

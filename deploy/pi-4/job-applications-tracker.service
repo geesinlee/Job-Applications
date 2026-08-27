@@ -1,0 +1,10 @@
+[Unit]
+Description=Job Applications Daily Tracker Run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=%h/Projects/Job-Applications
+ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
+          tracker_daily.py
+EnvironmentFile=-%h/.config/job-applications/env
