@@ -1,0 +1,9 @@
+[Unit]
+Description=Job Applications Operational Health Probe Timer
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

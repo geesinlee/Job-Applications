@@ -357,7 +357,19 @@ def main() -> int:
             print(f"DRY RUN: Would write digest for {date_str}: "
                   f"{len(date_surfaced)} surfaced, {len(date_below)} below threshold")
         else:
-            path = write_digest_markdown(DIGEST_DIR, date_str, date_surfaced, date_below, stats)
+            date_rejection_reasons = {
+                job.url: filter_result["rejection_reasons"][job.url]
+                for job in date_below
+                if job.url in filter_result["rejection_reasons"]
+            }
+            path = write_digest_markdown(
+                DIGEST_DIR,
+                date_str,
+                date_surfaced,
+                date_below,
+                stats,
+                rejection_reasons=date_rejection_reasons,
+            )
             _log(f"Wrote digest: {path}")
         digest_dates_written.append(date_str)
 

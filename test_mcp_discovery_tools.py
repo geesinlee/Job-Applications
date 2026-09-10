@@ -100,6 +100,31 @@ class TestReviewDailyDiscoveries:
         assert result["date"] == sample_digest
 
 
+class TestListJobDiscoveries:
+    """Tests for the relevance-filtered discovery listing."""
+
+    def test_returns_only_surfaced_jobs_by_default(self, tmp_artefacts, sample_digest):
+        with patch.object(mcp_server, "ARTEFACTS_DIR", tmp_artefacts):
+            result = mcp_server.list_job_discoveries()
+
+        assert result["total"] == 2
+        assert {job["category"] for job in result["discoveries"]} == {"surfaced"}
+        assert result["filter_applied"]["policy"] == "ai_company_and_enterprise_sales"
+
+    def test_can_include_rejected_jobs_with_reason(self, tmp_artefacts, sample_digest):
+        with patch.object(mcp_server, "ARTEFACTS_DIR", tmp_artefacts):
+            result = mcp_server.list_job_discoveries(include_below_threshold=True)
+
+        assert result["total"] == 3
+        rejected = [
+            job for job in result["discoveries"]
+            if job["category"] == "below_threshold"
+        ]
+        assert len(rejected) == 1
+        assert rejected[0]["company"] == "Acme Corp"
+        assert rejected[0]["reason"] == "Below pre-filter threshold"
+
+
 class TestIngestFromDiscovery:
     """Tests for the ingest_from_discovery MCP tool."""
 

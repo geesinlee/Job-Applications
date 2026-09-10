@@ -4230,17 +4230,19 @@ def list_opportunities(
 @mcp.tool()
 def list_job_discoveries(
     limit: int | None = None,
-    days_back: int = 1
+    days_back: int = 1,
+    include_below_threshold: bool = False,
 ) -> dict:
     """List new job opportunities discovered from LinkedIn feed.
 
-    Returns today's (or recent days') job discoveries from the daily digest,
-    filtered for relevance to your profile. Perfect for AI recommendations
-    and job matching workflows.
+    Returns today's (or recent days') AI-company enterprise-sales discoveries
+    from the daily digest. Below-threshold cards are excluded by default but
+    can be included for audit/review.
 
     Args:
         limit: Maximum number of opportunities to return (default: all).
         days_back: Number of days to look back (default: 1 for today only).
+        include_below_threshold: Include rejected cards and their reasons.
 
     Returns:
         Dictionary with:
@@ -4252,6 +4254,7 @@ def list_job_discoveries(
             - location: job location
             - url: direct LinkedIn job URL
             - category: "surfaced" (relevant) or "below_threshold" (less relevant)
+            - reason: rejection reason (below-threshold cards only)
         - backend: which backend was used (filesystem digest or in-memory)
     """
     try:
@@ -4288,13 +4291,22 @@ def list_job_discoveries(
                 for line in lines:
                     # Detect section headers
                     if line.startswith("## Surfaced for Review"):
+                        if current_job:
+                            discoveries.append(current_job)
+                            current_job = None
                         current_section = "surfaced"
                         continue
                     elif line.startswith("## Below Threshold"):
+                        if current_job:
+                            discoveries.append(current_job)
+                            current_job = None
                         current_section = "below_threshold"
                         continue
                     elif line.startswith("*"):
                         # Stats line, reset
+                        if current_job:
+                            discoveries.append(current_job)
+                            current_job = None
                         current_section = None
                         continue
 
@@ -4322,6 +4334,8 @@ def list_job_discoveries(
                             snippet = line.split("**Snippet:**")[1].strip()
                             if snippet != "N/A":
                                 current_job["snippet"] = snippet
+                        elif line.startswith("- **Reason:**"):
+                            current_job["reason"] = line.split("**Reason:**")[1].strip()
 
                 # Add last job if exists
                 if current_job:
@@ -4330,6 +4344,13 @@ def list_job_discoveries(
             except Exception as e:
                 logger.warning(f"Failed to parse digest {digest_file}: {e}")
                 continue
+
+        if not include_below_threshold:
+            discoveries = [
+                discovery
+                for discovery in discoveries
+                if discovery.get("category") == "surfaced"
+            ]
 
         # Apply limit if specified
         if limit and len(discoveries) > limit:
@@ -4341,7 +4362,9 @@ def list_job_discoveries(
             "date": target_dates[0].isoformat() if target_dates else None,
             "filter_applied": {
                 "limit": limit,
-                "days_back": days_back
+                "days_back": days_back,
+                "include_below_threshold": include_below_threshold,
+                "policy": "ai_company_and_enterprise_sales",
             },
             "backend": "digest_files"
         }

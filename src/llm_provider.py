@@ -72,7 +72,7 @@ class GeminiProvider(LLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 2000,
     ) -> str:
-        model = model or os.getenv("EVIDENCE_LLM_MODEL", "gemini-2.5-flash")
+        model = model or os.getenv("EVIDENCE_LLM_MODEL", "gemini-3.6-flash")
         try:
             from google.genai import types
 
@@ -82,6 +82,7 @@ class GeminiProvider(LLMProvider):
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     max_output_tokens=max_tokens,
+                    response_mime_type="application/json",
                 ),
             )
             return response.text

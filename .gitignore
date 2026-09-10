@@ -56,3 +56,20 @@ docs/MCP_TOOLS_DEPLOYMENT.md
 
 # Cross-project working notes; not part of the Job-Applications release
 scratch/
+
+# Fleet CI/CD Standard Ignores
+.pytest_cache/
+.ruff_cache/
+.venv*/
+*.log
+logs/
+*.db
+*.sqlite*
+!.env.example
+data/*.db
+.system_generated/
+
+digests/
+temp-trash/
+.coverage
+.job_digest_last_run

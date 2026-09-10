@@ -11,12 +11,29 @@ import pytest
 from email_parser import JobCard
 from job_digest import (
     _levenshtein,
+    deduplicate_across_job_alerts,
     deduplicate_jobs,
     load_prefilter_keywords,
     load_tracker,
     prefilter_jobs,
+    triage_jobs_with_llm,
     write_digest_markdown,
 )
+
+
+class FakeResponse:
+    """Small requests.Response stand-in for digest tests."""
+
+    def __init__(self, payload=None, status_code=200):
+        self.payload = payload or {}
+        self.status_code = status_code
+
+    def json(self):
+        return self.payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +189,25 @@ class TestDeduplicateJobs:
         """Empty jobs list produces empty results."""
         result = deduplicate_jobs([], sample_tracker)
         assert result["new"] == []
-        assert result["already_tracked"] == []
+
+
+class TestDeduplicateAcrossJobAlerts:
+    """Tests for cross-alert deduplication by LinkedIn job ID."""
+
+    def test_same_job_id_different_tracking_urls_deduplicates(self):
+        jobs = [
+            JobCard("Enterprise Sales Director (AI)", "Meta", "Singapore",
+                    "https://www.linkedin.com/comm/jobs/view/4460886433/?tracking=a",
+                    "", "m1", "2026-09-01"),
+            JobCard("Enterprise Sales Director (AI)", "The Talent Lever", "Singapore",
+                    "https://www.linkedin.com/comm/jobs/view/4460886433/?tracking=b",
+                    "longer details", "m2", "2026-09-02"),
+        ]
+
+        result = deduplicate_across_job_alerts(jobs)
+
+        assert len(result) == 1
+        assert result[0].snippet == "longer details"
 
 
 # ---------------------------------------------------------------------------
@@ -214,124 +249,184 @@ class TestLevenshtein:
 class TestPrefilterJobs:
     """Tests for the prefilter_jobs function."""
 
-    def test_singapore_jobs_pass(self):
-        """Jobs with Singapore location are surfaced."""
-        jobs = [
-            JobCard(
-                title="Sales Representative",
-                company="Some Co",
-                location="Singapore",
-                url="https://example.com/1",
-                snippet="Sell products",
-                source_email_id="m1",
-                source_date="2026-08-05",
-            ),
-        ]
-        keywords = {
-            "senior_titles": {"senior", "director", "vp", "head", "lead", "partner"},
-            "locations": {"singapore", "apac", "asean"},
-            "skills": set(),
-            "industries": set(),
-        }
-        result = prefilter_jobs(jobs, keywords)
-        assert len(result["surfaced"]) == 1
-        assert len(result["below_threshold"]) == 0
+    @staticmethod
+    def _job(title, company, snippet="", url="https://example.com/job"):
+        return JobCard(
+            title=title,
+            company=company,
+            location="Singapore",
+            url=url,
+            snippet=snippet,
+            source_email_id="m1",
+            source_date="2026-08-05",
+        )
 
-    def test_remote_junior_roles_filtered(self):
-        """Remote junior roles without matching keywords go below threshold."""
-        jobs = [
-            JobCard(
-                title="Junior Developer",
-                company="Unknown Startup",
-                location="Remote",
-                url="https://example.com/2",
-                snippet="Write code for a small team",
-                source_email_id="m2",
-                source_date="2026-08-05",
-            ),
-        ]
-        keywords = {
-            "senior_titles": {"senior", "director", "vp", "head", "lead", "partner"},
-            "locations": {"singapore", "apac", "asean"},
-            "skills": {"python", "java"},
-            "industries": {"public sector", "government"},
-        }
-        result = prefilter_jobs(jobs, keywords)
-        assert len(result["below_threshold"]) == 1
-        assert len(result["surfaced"]) == 0
+    @pytest.mark.parametrize(
+        "company",
+        [
+            "OpenAI",
+            "Anthropic",
+            "Palantir Technologies",
+            "Mistral AI",
+            "Confluent",
+            "Snowflake",
+            "Databricks",
+        ],
+    )
+    def test_known_ai_company_and_enterprise_seller_pass(self, company):
+        job = self._job("Enterprise Account Executive", company)
+        result = prefilter_jobs([job], {})
+        assert result["surfaced"] == [job]
+        assert result["policy"] == "ai_company_and_enterprise_sales"
 
-    def test_senior_titles_pass_without_singapore_location(self):
-        """Senior titles are surfaced even without Singapore location."""
-        jobs = [
-            JobCard(
-                title="Senior Director of Engineering",
-                company="TechCorp",
-                location="Remote",
-                url="https://example.com/3",
-                snippet="Lead engineering teams",
-                source_email_id="m3",
-                source_date="2026-08-05",
-            ),
-        ]
-        keywords = {
-            "senior_titles": {"senior", "director", "vp", "head", "lead", "partner"},
-            "locations": {"singapore", "apac"},
-            "skills": set(),
-            "industries": set(),
-        }
-        result = prefilter_jobs(jobs, keywords)
-        assert len(result["surfaced"]) == 1
+    def test_ai_adjacent_company_and_sales_leader_pass(self):
+        job = self._job("Regional Sales Director, APAC", "Confluent")
+        result = prefilter_jobs([job], {})
+        assert result["surfaced"] == [job]
 
-    def test_skill_keywords_in_snippet_pass(self):
-        """Jobs with matching skill keywords in snippet are surfaced."""
-        jobs = [
-            JobCard(
-                title="Analyst",
-                company="DataCo",
-                location="New York",
-                url="https://example.com/4",
-                snippet="Work with Snowflake and data pipelines",
-                source_email_id="m4",
-                source_date="2026-08-05",
-            ),
-        ]
-        keywords = {
-            "senior_titles": {"senior", "director", "vp", "head", "lead"},
-            "locations": {"singapore"},
-            "skills": {"snowflake", "data pipelines"},
-            "industries": set(),
-        }
-        result = prefilter_jobs(jobs, keywords)
-        assert len(result["surfaced"]) == 1
+    def test_product_evidence_allows_unlisted_ai_company(self):
+        job = self._job(
+            "Strategic Account Executive",
+            "New Model Co",
+            "We build a generative AI platform for regulated enterprises.",
+        )
+        result = prefilter_jobs([job], {})
+        assert result["surfaced"] == [job]
 
-    def test_apac_in_location_passes(self):
-        """APAC in location keyword triggers surfacing."""
-        jobs = [
-            JobCard(
-                title="Account Manager",
-                company="CorpInc",
-                location="APAC - Multiple",
-                url="https://example.com/5",
-                snippet="Manage accounts across the region",
-                source_email_id="m5",
-                source_date="2026-08-05",
-            ),
-        ]
-        keywords = {
-            "senior_titles": {"senior", "director", "vp", "head", "lead"},
-            "locations": {"singapore", "apac", "asean"},
-            "skills": set(),
-            "industries": set(),
-        }
-        result = prefilter_jobs(jobs, keywords)
-        assert len(result["surfaced"]) == 1
+    def test_ai_sales_segment_in_title_is_product_evidence(self):
+        job = self._job("Head of Enterprise Sales, AI/ML", "New Cloud Co")
+        result = prefilter_jobs([job], {})
+        assert result["surfaced"] == [job]
+
+    def test_adjacent_product_evidence_allows_unlisted_company(self):
+        job = self._job(
+            "Head of Sales",
+            "EventFlow",
+            "Our real-time data streaming platform powers production AI workloads.",
+        )
+        result = prefilter_jobs([job], {})
+        assert result["surfaced"] == [job]
+
+    def test_generic_company_enterprise_sales_role_is_filtered(self):
+        job = self._job(
+            "Enterprise Account Executive",
+            "Generic CRM Corp",
+            "Sell our CRM suite to large businesses.",
+        )
+        result = prefilter_jobs([job], {})
+        assert result["below_threshold"] == [job]
+        assert "not identified as AI-core" in result["rejection_reasons"][job.url]
+
+    def test_ai_company_non_sales_leadership_role_is_filtered(self):
+        job = self._job("Senior Director of Engineering", "Anthropic")
+        result = prefilter_jobs([job], {})
+        assert result["below_threshold"] == [job]
+        assert "not enterprise sales" in result["rejection_reasons"][job.url]
+
+    def test_sales_engineering_role_is_filtered(self):
+        job = self._job("Director of Sales Engineering", "Mistral AI")
+        result = prefilter_jobs([job], {})
+        assert result["below_threshold"] == [job]
+        assert "not enterprise sales" in result["rejection_reasons"][job.url]
+
+    def test_location_alone_does_not_qualify_job(self):
+        job = self._job("Account Manager", "Generic Corp")
+        result = prefilter_jobs(
+            [job],
+            {"locations": {"singapore"}, "skills": {"ai", "sales"}},
+        )
+        assert result["surfaced"] == []
+        assert result["below_threshold"] == [job]
+
+    def test_deployment_can_supply_target_company(self):
+        job = self._job("VP of Sales", "Tenant Target Systems")
+        result = prefilter_jobs(
+            [job],
+            {"ai_target_companies": {"tenant target"}},
+        )
+        assert result["surfaced"] == [job]
 
     def test_empty_jobs(self):
         """Empty jobs list returns empty surfaced and below_threshold."""
-        keywords = {"senior_titles": set(), "locations": set(), "skills": set(), "industries": set()}
-        result = prefilter_jobs([], keywords)
+        result = prefilter_jobs([], {})
         assert result["surfaced"] == []
         assert result["below_threshold"] == []
+        assert result["rejection_reasons"] == {}
+
+
+class TestLlmTriage:
+    """Tests for LLM-backed triage."""
+
+    class FakeProvider:
+        def generate_text(self, prompt, model=None, max_tokens=2000):
+            return json.dumps([
+                {
+                    "url": "https://example.com/keep",
+                    "surface": True,
+                    "score": 91,
+                    "company_fit": "ai_core",
+                    "role_fit": "enterprise_sales",
+                    "candidate_fit": "strong",
+                    "reason": "AI company and enterprise sales fit.",
+                },
+                {
+                    "url": "https://example.com/drop",
+                    "surface": False,
+                    "score": 20,
+                    "company_fit": "unclear",
+                    "role_fit": "no",
+                    "candidate_fit": "weak",
+                    "reason": "Academic/technical role, not enterprise sales.",
+                },
+            ])
+
+    def test_llm_triage_surfaces_model_selected_jobs(self):
+        keep = JobCard(
+            title="Enterprise Account Executive",
+            company="OpenAI",
+            location="Singapore",
+            url="https://example.com/keep",
+            snippet="Sell AI products to large enterprises.",
+            source_email_id="m1",
+            source_date="2026-09-04",
+        )
+        drop = JobCard(
+            title="Lecturer, Artificial Intelligence",
+            company="Example University",
+            location="Singapore",
+            url="https://example.com/drop",
+            snippet="Teach AI courses.",
+            source_email_id="m2",
+            source_date="2026-09-04",
+        )
+
+        result = triage_jobs_with_llm([keep, drop], "enterprise sales leader", provider=self.FakeProvider())
+
+        assert result["policy"] == "llm_resume_triage"
+        assert result["surfaced"] == [keep]
+        assert result["below_threshold"] == [drop]
+        assert "Academic/technical role" in result["rejection_reasons"][drop.url]
+
+    def test_llm_triage_rejects_missing_decision(self):
+        class EmptyProvider:
+            def generate_text(self, prompt, model=None, max_tokens=2000):
+                return "[]"
+
+        job = JobCard(
+            title="Enterprise Account Executive",
+            company="OpenAI",
+            location="Singapore",
+            url="https://example.com/missing",
+            snippet="Sell AI products.",
+            source_email_id="m1",
+            source_date="2026-09-04",
+        )
+
+        result = triage_jobs_with_llm([job], "enterprise sales leader", provider=EmptyProvider())
+
+        assert result["surfaced"] == []
+        assert result["below_threshold"] == [job]
+        assert "did not return a decision" in result["rejection_reasons"][job.url]
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +479,7 @@ class TestLoadPrefilterKeywords:
         keywords = load_prefilter_keywords(cv_path)
         assert "senior" in keywords["senior_titles"]
         assert "remote" in keywords["locations"]
+        assert "openai" in keywords["ai_target_companies"]
         # Should have extracted some skills
         assert len(keywords["skills"]) > 0
         # Should have extracted some industries
@@ -492,6 +588,31 @@ class TestWriteDigestMarkdown:
         assert "StartupXYZ" in content
         assert "Junior Dev" in content
         assert "Below pre-filter threshold" in content
+
+    def test_writes_specific_rejection_reason(self, tmp_path):
+        digest_dir = tmp_path / "digests"
+        job = JobCard(
+            title="Software Engineer",
+            company="OpenAI",
+            location="Remote",
+            url="https://example.com/rejected",
+            snippet="Build model infrastructure",
+            source_email_id="m3",
+            source_date="2026-08-05",
+        )
+        stats = {"processed": 1, "surfaced": 0, "below_threshold": 1, "already_tracked": 0}
+
+        path = write_digest_markdown(
+            digest_dir,
+            "2026-08-05",
+            [],
+            [job],
+            stats,
+            rejection_reasons={job.url: "Role is not enterprise sales or sales leadership"},
+        )
+
+        content = path.read_text(encoding="utf-8")
+        assert "**Reason:** Role is not enterprise sales or sales leadership" in content
 
     def test_stats_line(self, tmp_path):
         """Digest contains the stats summary line."""
@@ -658,6 +779,42 @@ class TestFormatDigestEmail:
 
 
 # ---------------------------------------------------------------------------
+# TestRunLock
+# ---------------------------------------------------------------------------
+
+class TestRunLock:
+    """Tests for duplicate-invocation prevention."""
+
+    def test_only_one_process_handle_can_hold_lock(self, tmp_path):
+        from job_digest import _acquire_run_lock, _release_run_lock
+
+        lock_path = tmp_path / ".job_digest.lock"
+        first = _acquire_run_lock(lock_path)
+        assert first is not None
+        try:
+            assert _acquire_run_lock(lock_path) is None
+        finally:
+            _release_run_lock(first)
+
+        replacement = _acquire_run_lock(lock_path)
+        assert replacement is not None
+        _release_run_lock(replacement)
+
+    def test_main_skips_when_another_run_holds_lock(self, tmp_path):
+        from job_digest import main
+
+        with patch("sys.argv", ["job_digest.py"]), \
+             patch("job_digest._acquire_run_lock", return_value=None), \
+             patch("job_digest.GmailAccountManager") as mock_manager, \
+             patch("job_digest.LOG_PATH", tmp_path / "job_digest.log"):
+            result = main()
+
+        assert result == 0
+        mock_manager.assert_not_called()
+        assert "skipping duplicate invocation" in (tmp_path / "job_digest.log").read_text()
+
+
+# ---------------------------------------------------------------------------
 # TestDryRun
 # ---------------------------------------------------------------------------
 
@@ -711,3 +868,157 @@ class TestDryRun:
             assert result == 0
             # No digest directory or files should be created
             assert not (tmp_path / "digests").exists()
+
+
+# ---------------------------------------------------------------------------
+# TestGmailPagination
+# ---------------------------------------------------------------------------
+
+class TestGmailPagination:
+    """Tests for Gmail list pagination in the daily digest."""
+
+    def test_query_linkedin_emails_fetches_all_pages(self):
+        from job_digest import query_linkedin_emails
+
+        mock_mgr = MagicMock()
+        mock_mgr.get_access_token.return_value = "fake-token"
+        calls = []
+
+        def fake_get(url, headers=None, timeout=None):
+            calls.append(url)
+            if "/messages?" in url and "pageToken=next-1" not in url:
+                return FakeResponse({
+                    "messages": [{"id": "m1"}],
+                    "nextPageToken": "next-1",
+                })
+            if "/messages?" in url:
+                return FakeResponse({"messages": [{"id": "m2"}]})
+            if "/messages/m1" in url:
+                return FakeResponse({
+                    "payload": {
+                        "mimeType": "text/html",
+                        "body": {"data": "PGh0bWw-b25lPC9odG1sPg"},
+                        "headers": [{"name": "Date", "value": "Tue, 1 Sep 2026 08:00:00 +0800"}],
+                    }
+                })
+            if "/messages/m2" in url:
+                return FakeResponse({
+                    "payload": {
+                        "mimeType": "text/html",
+                        "body": {"data": "PGh0bWw-dHdvPC9odG1sPg"},
+                        "headers": [{"name": "Date", "value": "Wed, 2 Sep 2026 08:00:00 +0800"}],
+                    }
+                })
+            raise AssertionError(f"unexpected URL: {url}")
+
+        with patch("job_digest.requests.get", side_effect=fake_get):
+            results = query_linkedin_emails(mock_mgr, "geesin", "2026-08-27")
+
+        assert [result["id"] for result in results] == ["m1", "m2"]
+        assert len([url for url in calls if "/messages?" in url]) == 2
+        assert any("pageToken=next-1" in url for url in calls)
+
+
+# ---------------------------------------------------------------------------
+# TestFailureRecovery
+# ---------------------------------------------------------------------------
+
+class TestFailureRecovery:
+    """Tests for durable failure state and retry-safe completion."""
+
+    def test_delivery_failure_keeps_source_emails_and_last_run_marker(self, tmp_path):
+        from job_digest import _run_pipeline
+
+        captured_stats = {}
+
+        def fake_write_digest(digest_dir, date_str, surfaced, below_threshold, stats, rejection_reasons=None):
+            captured_stats.update(stats)
+            return digest_dir / f"{date_str}.md"
+
+        job = JobCard(
+            title="Enterprise Account Executive",
+            company="OpenAI",
+            location="Singapore",
+            url="https://linkedin.com/jobs/view/123",
+            snippet="Sell AI products to enterprise customers",
+            source_email_id="m1",
+            source_date="2026-09-01",
+        )
+
+        with patch("job_digest.GMAIL_ACCOUNTS_CONFIG", "test-config"), \
+             patch("job_digest.GmailAccountManager") as MockMgr, \
+             patch("job_digest.query_linkedin_emails") as mock_query, \
+             patch("job_digest.parse_linkedin_email", return_value=[job]), \
+             patch("job_digest.write_digest_markdown", side_effect=fake_write_digest), \
+             patch("job_digest._send_digest_email", return_value=False), \
+             patch("job_digest.trash_emails") as mock_trash, \
+             patch("job_digest.LAST_RUN_FILE", tmp_path / ".last_run"), \
+             patch("job_digest.FAILURE_STATE_PATH", tmp_path / ".failure.json"), \
+             patch("job_digest._read_last_run", return_value="2026-08-27"):
+            mock_mgr = MockMgr.return_value
+            mock_acct = MagicMock()
+            mock_acct.email = "geesin@gmail.com"
+            mock_mgr.accounts = {"geesin": mock_acct}
+            mock_mgr.get_access_token.return_value = "fake-token"
+            mock_query.return_value = [{"id": "m1", "date": "2026-09-01", "html": "<html></html>"}]
+
+            result = _run_pipeline(MagicMock(dry_run=False), "2026-09-04")
+
+        assert result == 1
+        assert captured_stats["processed"] == 1
+        assert not mock_trash.called
+        assert not (tmp_path / ".last_run").exists()
+        failure = json.loads((tmp_path / ".failure.json").read_text(encoding="utf-8"))
+        assert failure["reason"] == "digest_delivery_failed"
+
+    def test_success_after_failure_adds_recovery_note_and_clears_state(self, tmp_path):
+        from job_digest import _run_pipeline
+
+        failure_path = tmp_path / ".failure.json"
+        failure_path.write_text(json.dumps({
+            "first_failed_at": "2026-09-02T00:00:00+00:00",
+            "last_failed_at": "2026-09-04T00:00:00+00:00",
+            "failure_count": 3,
+            "reason": "gmail_auth_failed",
+            "detail": "Could not authenticate any configured Gmail account",
+        }), encoding="utf-8")
+
+        delivered = {}
+        job = JobCard(
+            title="Enterprise Account Executive",
+            company="OpenAI",
+            location="Singapore",
+            url="https://linkedin.com/jobs/view/123",
+            snippet="Sell AI products to enterprise customers",
+            source_email_id="m1",
+            source_date="2026-09-01",
+        )
+
+        def fake_send(subject, body):
+            delivered["subject"] = subject
+            delivered["body"] = body
+            return True
+
+        with patch("job_digest.GMAIL_ACCOUNTS_CONFIG", "test-config"), \
+             patch("job_digest.GmailAccountManager") as MockMgr, \
+             patch("job_digest.query_linkedin_emails") as mock_query, \
+             patch("job_digest.parse_linkedin_email", return_value=[job]), \
+             patch("job_digest.write_digest_markdown", return_value=tmp_path / "2026-09-04.md"), \
+             patch("job_digest._send_digest_email", side_effect=fake_send), \
+             patch("job_digest.trash_emails", return_value=1), \
+             patch("job_digest.LAST_RUN_FILE", tmp_path / ".last_run"), \
+             patch("job_digest.FAILURE_STATE_PATH", failure_path), \
+             patch("job_digest._read_last_run", return_value="2026-08-27"):
+            mock_mgr = MockMgr.return_value
+            mock_acct = MagicMock()
+            mock_acct.email = "geesin@gmail.com"
+            mock_mgr.accounts = {"geesin": mock_acct}
+            mock_mgr.get_access_token.return_value = "fake-token"
+            mock_query.return_value = [{"id": "m1", "date": "2026-09-01", "html": "<html></html>"}]
+
+            result = _run_pipeline(MagicMock(dry_run=False), "2026-09-04")
+
+        assert result == 0
+        assert "Recovery note:" in delivered["body"]
+        assert "failed 3 time(s)" in delivered["body"]
+        assert not failure_path.exists()

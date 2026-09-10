@@ -17,22 +17,32 @@ graph TB
     subgraph "Application host"
         MCP[job_applications_mcp_server.py<br/>FastMCP HTTP :8086]
         ORCH[orchestration_consumer.py<br/>supervised Kafka worker]
+        DIGEST[job_digest.py<br/>scheduled LinkedIn discovery]
+        HEALTH[app_health.py<br/>scheduled health probe]
     end
 
     subgraph "Persistent storage"
         PG[(PostgreSQL<br/>CanonicalState)]
         ARTEFACTS[Company folders<br/>JD.md, CV, research, ...]
+        DIGEST_STATE[Digest files<br/>last-success marker, failure state]
+        HEALTH_STATE[Health snapshot<br/>alert signature]
     end
 
     AI[AI-Assistant] -->|orchestration.action_proposed| KAFKA[(Kafka)]
     KAFKA -->|matching follow-up proposals| ORCH
     ORCH -->|orchestration.action_completed| KAFKA
     KAFKA -->|correlated owner outcome| AI
+    DIGEST -.->|future digest health/status events| KAFKA
+    HEALTH -.->|health status events| KAFKA
     CC -->|MCP HTTP / stdio| MCP
     MCP -->|tracker, profile, CV metadata| PG
     ORCH -->|execute mode via owner functions| PG
     MCP -->|read/write| ARTEFACTS
     ORCH -->|save_interview_notes| ARTEFACTS
+    DIGEST -->|read tracker/profile context| PG
+    DIGEST -->|write digest and retry state| DIGEST_STATE
+    HEALTH -->|probe runtime dependencies| MCP
+    HEALTH -->|write health state| HEALTH_STATE
 ```
 
 ## Major Components
@@ -41,6 +51,8 @@ graph TB
 |-----------|------|----------------|
 | MCP Server | `job_applications_mcp_server.py` | 24 tools, startup validation, state I/O |
 | Orchestration Consumer | `orchestration_consumer.py` | Dry-run-by-default Kafka consumer for interview follow-up proposals and producer of correlated owner outcomes |
+| Job Discovery Digest | `job_digest.py` | Scheduled LinkedIn job-alert ingestion, deterministic AI/enterprise-sales filtering, retry-safe digest delivery |
+| Health Probe | `app_health.py` | Standalone operational checks, durable health snapshot, state-change notifications, optional Kafka/webhook alerts |
 | Daily Tracker | `tracker_daily.py` | Overdue follow-ups, email digest, optional remote backup |
 | Tests | `test_mcp_server.py`, `test_tracker_daily.py`, `test_orchestration_consumer.py` | Owner behavior, isolated state, and fake Kafka input |
 | Systemd Units | `deploy/pi-4/*.service`, `*.timer` | Always-on MCP and orchestration services; legacy timers retained for recovery/local use |
@@ -185,13 +197,58 @@ External MCP calls are made by Claude (the AI client), not by the server directl
 - **Services:**
   - `job-applications-mcp.service` — FastMCP HTTP :8086, bearer auth, `Restart=on-failure`
   - `job-applications-orchestration.service` — supervised Kafka consumer, disabled/dry-run by default
+  - `job-applications-health.timer` — scheduled operational health probe
   - `job-applications-tracker.timer` — legacy file-backend timer, disabled in Postgres production
 - **Data paths:** `JOB_APP_*` variables point to a deployer-owned persistent volume.
 
 ### Persistent storage
 
 - **PostgreSQL:** Canonical structured state.
-- **Filesystem volume:** Company artefacts, interview notes, and submitted-document snapshots.
+- **Filesystem volume:** Company artefacts, interview notes, submitted-document
+  snapshots, daily discovery digests, the last successful digest marker, and
+  unresolved digest failure state.
+
+### Job discovery resilience
+
+`job_digest.py` treats Gmail OAuth, model-based triage, and SMTP delivery as
+independently fallible runtime dependencies. A non-dry-run digest holds an
+advisory lock before doing work, paginates Gmail job-alert searches across the
+whole available result set, deduplicates LinkedIn jobs by stable job ID, and
+only advances `.job_digest_last_run` after the digest email is delivered. If
+authentication, triage, or delivery fails, it writes `.job_digest_failure.json`
+and leaves LinkedIn source emails plus the last-success marker untouched so the
+next successful run catches up from the previous successful date.
+
+Discovery triage can run in deterministic `rules` mode or LLM-backed `llm`
+mode. LLM triage sends deduplicated LinkedIn cards plus a bounded reference-CV
+excerpt to the configured provider and requires structured JSON decisions with
+scores and evidence-based rejection reasons. Ambiguous cards are rejected.
+
+The next delivered digest includes a recovery note summarizing the unresolved
+failure and clears the failure state. SMTP failure alerts remain best-effort:
+when SMTP itself is the broken dependency, the durable state file is the source
+of truth until an independent alert channel is added.
+
+Kafka is already part of the application architecture for orchestration events.
+It is a good fit for future digest health/status events because it can decouple
+failure detection from email delivery, but the digest pipeline should remain
+recoverable without Kafka so discovery does not depend on the event bus being
+healthy.
+
+### App health and alerting
+
+`app_health.py` runs outside the MCP process and checks the deployment
+environment, artefact paths, Postgres reachability, MCP HTTP availability, SMTP
+configuration/login, Gmail OAuth refresh, LLM triage configuration, job-digest
+freshness/failure state, and optional Kafka broker reachability. It writes the current snapshot to
+`.job_app_health.json` and records the last notified failure signature in
+`.job_app_health_alert_state.json`.
+
+Health notifications are state-change based. This avoids repeated noise during
+an unchanged outage while still surfacing new failures or recovery. SMTP remains
+supported, but an independent alert route such as `JOB_APP_HEALTH_WEBHOOK_URL`
+or Kafka health events should be configured because SMTP can be the failed
+dependency.
 
 ### Development host
 

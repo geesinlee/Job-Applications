@@ -16,5 +16,6 @@ weasyprint~=61.0
 
 # Gate 10: LangChain workflow orchestration
 langchain>=0.1.0,<1.0
+google-genai>=2.22.0,<3.0
 langchain-google-genai>=0.1.0
 langchain-core>=0.1.0
