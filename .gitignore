@@ -30,6 +30,7 @@ temp-trash/
 # are ignored by default; source directories are explicitly allowlisted below.
 /*/
 !/.agents/
+!/.github/
 !/data/
 !/deploy/
 !/docs/

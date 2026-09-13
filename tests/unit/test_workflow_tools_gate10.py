@@ -187,26 +187,27 @@ def test_revise_cv_rejects_missing_notes(workflow_tools):
 
 
 @pytest.mark.parametrize(
-    ("confirmed", "next_action", "saved_path"),
+    ("confirmed", "next_action"),
     [
-        (True, "proceed_to_submit", "/tmp/cv_app-007.md"),
-        (False, "revise_again", None),
+        (True, "proceed_to_submit"),
+        (False, "revise_again"),
     ],
 )
 def test_confirm_cv_preserves_explicit_user_decision(
     workflow_tools,
     confirmed,
     next_action,
-    saved_path,
 ):
     result = workflow_tools.confirm_cv("app-007", "# Final CV", confirmed)
 
-    assert result == {
-        "ok": True,
-        "confirmed": confirmed,
-        "next_action": next_action,
-        "saved_path": saved_path,
-    }
+    assert result["ok"] is True
+    assert result["confirmed"] == confirmed
+    assert result["next_action"] == next_action
+    if confirmed:
+        assert result["saved_path"] is not None
+        assert "app-007" in result["saved_path"]
+    else:
+        assert result["saved_path"] is None
 
 
 @pytest.mark.parametrize(

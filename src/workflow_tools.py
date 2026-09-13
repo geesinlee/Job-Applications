@@ -232,18 +232,22 @@ Present the questions to the user. When they reply, call `answer_clarifying_ques
             import os
             from pathlib import Path
             base_cv_env = os.getenv("JOB_APP_BASE_CV_PATH")
+            base_cv_content = None
             if base_cv_env and Path(base_cv_env).exists():
-                base_cv_content = Path(base_cv_env).read_text()
+                base_cv_content = Path(base_cv_env).read_text(encoding="utf-8")
             else:
-                default_path = (
-                    Path(os.getenv("JOB_APP_ARTEFACTS_DIR", os.path.join(os.getcwd(), "data")))
-                    / "base_cv"
-                    / "Reference_CV.md"
-                )
-                if default_path.exists():
-                    base_cv_content = default_path.read_text()
-                else:
-                    base_cv_content = "Base CV not found."
+                for candidate in [
+                    Path(os.getenv("JOB_APP_ARTEFACTS_DIR", os.getenv("JOB_APP_BASE_DIR", ""))) / "base_cv" / "Reference_CV.md",
+                    Path("/Volumes/job-app-data/base_cv/Reference_CV.md"),
+                    Path("/mnt/job-app-data/base_cv/Reference_CV.md"),
+                    Path(os.getcwd()) / "Base CV" / "Reference_CV.md",
+                    Path(os.getcwd()) / "data" / "base_cv" / "Reference_CV.md",
+                ]:
+                    if candidate.exists() and candidate.is_file():
+                        base_cv_content = candidate.read_text(encoding="utf-8")
+                        break
+            if not base_cv_content:
+                base_cv_content = "Base CV not found."
             
             prompt = f"""Please write a tailored markdown CV draft for the {role} position.
 App ID: {application_id}
@@ -285,11 +289,32 @@ When complete, call `revise_cv` or ask the user to confirm."""
             return {"ok": False, "error": str(e)}
     def confirm_cv(self, application_id: str, cv_draft: str, confirmed_by_user: bool) -> dict:
         try:
+            saved_path = None
+            if confirmed_by_user:
+                import os
+                from pathlib import Path
+                target_base = None
+                env_artefacts = os.getenv("JOB_APP_ARTEFACTS_DIR") or os.getenv("JOB_APP_BASE_DIR")
+                if env_artefacts and Path(env_artefacts).exists():
+                    target_base = Path(env_artefacts)
+                else:
+                    for nas_candidate in [Path("/Volumes/job-app-data"), Path("/mnt/job-app-data")]:
+                        if nas_candidate.exists() and nas_candidate.is_dir():
+                            target_base = nas_candidate
+                            break
+                if target_base:
+                    dest_dir = target_base / application_id
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest_file = dest_dir / f"cv_{application_id}.md"
+                    dest_file.write_text(cv_draft, encoding="utf-8")
+                    saved_path = str(dest_file)
+                else:
+                    saved_path = f"/tmp/cv_{application_id}.md"
             return {
                 "ok": True,
                 "confirmed": confirmed_by_user,
                 "next_action": "proceed_to_submit" if confirmed_by_user else "revise_again",
-                "saved_path": f"/tmp/cv_{application_id}.md" if confirmed_by_user else None
+                "saved_path": saved_path
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}

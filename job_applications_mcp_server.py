@@ -44,7 +44,10 @@ import requests
 from bs4 import BeautifulSoup
 import uvicorn
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except (ImportError, ModuleNotFoundError):
+    from mcp.server.mcpserver import MCPServer as FastMCP
 
 from requirement_service import RequirementService
 from cv_versioning_service import CVVersioningService, CVRecord, CVEvidenceUsage, CVStatus
@@ -70,14 +73,27 @@ logging.basicConfig(level=logging.INFO)
 _SRC_DIR = Path(__file__).resolve().parent
 _DEFAULT_DATA_DIR = _SRC_DIR / "data"
 
-BASE_DIR = Path(os.environ.get("JOB_APP_BASE_DIR", str(_DEFAULT_DATA_DIR)))
+def _detect_base_dir() -> Path:
+    env_dir = os.environ.get("JOB_APP_BASE_DIR")
+    if env_dir:
+        return Path(env_dir)
+    mac_nas = Path("/Volumes/job-app-data")
+    if mac_nas.exists() and mac_nas.is_dir():
+        return mac_nas
+    linux_nas = Path("/mnt/job-app-data")
+    if linux_nas.exists() and linux_nas.is_dir():
+        return linux_nas
+    return _DEFAULT_DATA_DIR
+
+
+BASE_DIR = _detect_base_dir()
 ARTEFACTS_DIR = Path(os.environ.get("JOB_APP_ARTEFACTS_DIR", str(BASE_DIR)))
 TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "tracker.json")))
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
 CV_RECORDS_PATH = Path(os.environ.get("JOB_APP_CV_RECORDS_PATH", str(BASE_DIR / "cv_records.json")))
 BASE_CV_PATH = Path(os.environ.get(
     "JOB_APP_BASE_CV_PATH",
-    str(ARTEFACTS_DIR / "base_cv" / "Reference_CV.md"),
+    str(_DEFAULT_DATA_DIR / "base_cv" / "Reference_CV.md"),
 ))
 NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")
 STORAGE_BACKEND = os.environ.get("JOB_APP_STORAGE_BACKEND", "file").lower()
@@ -506,7 +522,9 @@ def _resolve_company_folder(
     3. If multiple tracker records exist for this company and role_title is None → raise.
     4. Otherwise return the company root.
     """
-    company_root = ARTEFACTS_DIR / company
+    company_root = (ARTEFACTS_DIR / company).resolve()
+    if not company_root.is_relative_to(ARTEFACTS_DIR.resolve()):
+        raise ValueError(f"Path traversal detected in company: {company}")
 
     # Check how many tracker records exist for this company
     if tracker is None:
@@ -806,7 +824,9 @@ def get_workflow_state(application_id: str) -> dict:
 
 def _company_dir(company: str) -> Path:
     """Return the path to a company folder, creating it if needed."""
-    d = ARTEFACTS_DIR / company
+    d = (ARTEFACTS_DIR / company).resolve()
+    if not d.is_relative_to(ARTEFACTS_DIR.resolve()):
+        raise ValueError(f"Path traversal detected in company: {company}")
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -1493,6 +1513,11 @@ def _resolve_base_cv_content(company_dir: Path) -> str | None:
     """Global Base_CV first (BASE_CV_PATH); falls back to a per-company CV file."""
     if BASE_CV_PATH.exists():
         return _read_file(BASE_CV_PATH)
+
+    artefacts_cv = ARTEFACTS_DIR / "base_cv" / "Reference_CV.md"
+    if artefacts_cv.exists():
+        return _read_file(artefacts_cv)
+
     cv_file = _find_cv(company_dir)
     if cv_file is None:
         return None
@@ -2968,7 +2993,7 @@ def generate_cover_letter(company: str, tone: str = "storyteller") -> dict:
 
 
 @mcp.tool()
-def save_cover_letter(company: str, content: str, tone: str = "storyteller") -> dict:
+def save_cover_letter(company: str, content: str, tone: str = "storyteller", role_title: str | None = None) -> dict:
     """Save a cover letter to the company folder.
 
     Requirement 7.5: if a Cover_Letter.md already exists, it is renamed to
@@ -2979,6 +3004,7 @@ def save_cover_letter(company: str, content: str, tone: str = "storyteller") -> 
         company: Target employer name.
         content: The cover letter content in Markdown format.
         tone: The tone used (for the file header).
+        role_title: Optional role title to also save to specific role folder.
     """
     company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
@@ -2995,10 +3021,15 @@ def save_cover_letter(company: str, content: str, tone: str = "storyteller") -> 
     header = f"# COVER LETTER: {company.upper()}\n\n> Tone: {tone} | Generated: {datetime.now().strftime('%Y-%m-%d')}\n\n"
     output_path.write_text(header + content, encoding="utf-8")
 
+    if role_title:
+        role_dir = company_dir / _make_role_slug(role_title)
+        if role_dir.exists():
+            (role_dir / "Cover_Letter.md").write_text(header + content, encoding="utf-8")
+
     # Record output in tracker
     version = len(list(company_dir.glob("Cover_Letter_v*.md"))) + 1  # current version (backup just moved, so +1)
     tracker = _load_tracker()
-    _record_output(tracker, company, None, "cover_letter", {
+    _record_output(tracker, company, role_title, "cover_letter", {
         "path": str(output_path),
         "saved_at": _utc_now(),
         "version": version,
@@ -3328,6 +3359,8 @@ def save_tailored_cv(
     diff_summary: list | None = None,
     allow_rewording: bool = False,
     use_smart_guard: bool = True,
+    approved_by_user: bool = False,
+    role_title: str | None = None,
 ) -> dict:
     """Save a tailored CV to the company folder with configurable fabrication guards.
 
@@ -3344,6 +3377,8 @@ def save_tailored_cv(
             - Are all protected numbers still present?
             - What's the string similarity of reworded lines?
             - If >90% similar AND numbers preserved, allow it.
+        approved_by_user: If True, bypass requires_approval when changes have been reviewed.
+        role_title: Optional role title to also save to specific role folder.
     """
     company_dir = ARTEFACTS_DIR / company
     if not company_dir.exists():
@@ -3354,7 +3389,7 @@ def save_tailored_cv(
         if use_smart_guard or allow_rewording:
             # Option 3 (smart guard) or hybrid approach
             is_valid, altered_lines, analysis = _validate_protected_content_smart(base_cv_content, content)
-            if not is_valid and not allow_rewording:
+            if not is_valid and not allow_rewording and not approved_by_user:
                 # Smart guard found issues, but rewording not allowed
                 return {
                     "error": "fabrication_detected",
@@ -3363,7 +3398,7 @@ def save_tailored_cv(
                     "analysis": analysis,
                     "suggestion": "Numbers may be missing or content too different. Use allow_rewording=true to review changes.",
                 }
-            elif not is_valid and allow_rewording:
+            elif not is_valid and allow_rewording and not approved_by_user:
                 # Smart guard found issues, but rewording allowed - return for review
                 return {
                     "error": "requires_approval",
@@ -3375,7 +3410,7 @@ def save_tailored_cv(
         else:
             # Legacy exact-match guard (Option 3 disabled)
             altered = [line for line in _protected_lines(base_cv_content) if line not in content]
-            if altered:
+            if altered and not approved_by_user:
                 return {
                     "error": "fabrication_detected",
                     "message": "One or more protected figures from the Base_CV were altered or removed.",
@@ -3407,9 +3442,14 @@ def save_tailored_cv(
     diff_body = "\n".join(diff_lines) if diff_lines else "(no changes recorded)"
     diff_path.write_text(f"# CV Diff Summary: {company}\n\n{diff_body}\n", encoding="utf-8")
 
+    if role_title:
+        role_dir = company_dir / _make_role_slug(role_title)
+        if role_dir.exists():
+            (role_dir / "CV_tailored.md").write_text(header + content, encoding="utf-8")
+
     # Record output in tracker
     tracker = _load_tracker()
-    _record_output(tracker, company, None, "tailored_cv", {
+    _record_output(tracker, company, role_title, "tailored_cv", {
         "path": str(cv_file),
         "saved_at": _utc_now(),
     })
