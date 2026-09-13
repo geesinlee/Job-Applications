@@ -1,8 +1,21 @@
 # Current State — Job Applications MCP Server
 
-> Last updated: 2026-09-04.
+> Last updated: 2026-09-13.
 
-## Release
+## Release & Security Governance
+
+Version `0.4.1` enforces strict fleet governance, zero-mock domain boundaries, and internet-enablement security standards.
+
+- **Strict CI/CD**: Dual-job GitHub Actions pipeline (`security-and-governance` and `python-build-and-test`) with zero error suppression (`|| true` eliminated).
+- **Zero-LAN-IP Policy**: Standalone `scripts/lint_no_hardcoded_ips.py` strictly prevents intranet literals in code or configuration.
+- **Exposed Secret Defense**: `scripts/secret_rotation_engine.py` enforces automated credential scans and prevents tracked `.env` or plain-text secrets.
+- **Domain Boundaries**: `scripts/lint_domain_boundaries.py` enforces zero-infringement architecture across fleet boundaries.
+- **Internet-Enabled MCP Security**:
+  - `_StaticBearerMiddleware` strictly validates `Authorization: Bearer <MCP_AUTH_TOKEN>` on HTTP mode endpoints (rejects 401 on missing, invalid, or malformed tokens).
+  - Path traversal protections on `_company_dir` and `_resolve_company_folder` strictly contain filesystem mutations within `ARTEFACTS_DIR`.
+  - Comprehensive automated security test suite in `tests/unit/test_security_governance.py`.
+- **Pre-commit Gate**: `.git/hooks/pre-commit` enforces secret, LAN-IP, and domain boundary validations before all local commits.
+- **GitHub Sync**: Local `main` branch configured with upstream tracking (`origin/main`) and kept in continuous synchronization.
 
 Version `0.4.0` provides a tenant-neutral MCP server with Postgres-canonical
 structured state and filesystem-managed application artefacts.
