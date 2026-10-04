@@ -1,0 +1,38 @@
+#!/bin/bash
+# Fleet Universal Agent Harness — DevSecOps Pre-Commit Gate
+# Enforces Zero Plaintext Secrets, LAN IP Masking, and Domain Boundary Rules.
+#
+# Scans each STAGED FILE's content (not the diff text). ComplianceSentinel is
+# diff-naive: `--content "$(git diff --cached)"` false-passes because + -prefixed
+# diff lines are not matched. Tracked as DELEGATE-1791093836-D517F4 against
+# fleet-rationalization; this is the consumer-side workaround.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+export PYTHONPATH="/Users/gslee/Projects/fleet-rationalization:$PYTHONPATH"
+REPO_NAME="$(basename "$REPO_ROOT")"
+
+# Staged, added/modified files only (skip deletions). Restrict to source types.
+# NOTE: macOS /bin/bash is 3.2 (no `mapfile`); use a here-string loop so `fail`
+# persists in the current shell (a pipe would run the loop in a subshell).
+files=$(git diff --cached --name-only --diff-filter=AM -- \
+  '*.py' '*.js' '*.ts' '*.yml' '*.yaml' '*.sh' '*.toml' '*.json' '*.md')
+
+if [ -z "$files" ]; then
+  echo "No scannable staged files — preflight passes vacuously."
+  exit 0
+fi
+
+fail=0
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  if ! python3 -m harness.cli compliance --repo "$REPO_NAME" --file "$f"; then
+    echo "🚨 Violations in $f (see report above)"
+    fail=1
+  fi
+done <<< "$files"
+
+if [ $fail -ne 0 ]; then
+  echo "🚨 [DevSecOps Blocked] Security or compliance violations detected. Commit aborted."
+  exit 1
+fi
+exit 0

@@ -1,0 +1,54 @@
+name: Fleet DevSecOps & Harness Gate
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  devsecops-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout fleet-rationalization (harness engine)
+        uses: actions/checkout@v4
+        with:
+          repository: geesinlee/infra-control-plane
+          token: ${{ secrets.FLEET_INFRA_PAT }}
+          path: fleet-rationalization
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install harness dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pydantic
+
+      - name: Run Fleet Harness Compliance Gate
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$GITHUB_BASE_REF"
+          # Scan each changed source file's content (not the diff text) —
+          # ComplianceSentinel is diff-naive: --file/--content on a diff
+          # false-passes (regexes miss +-prefixed lines).
+          mapfile -t files < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD" \
+            -- '*.py' '*.js' '*.ts' '*.yml' '*.yaml' '*.sh' '*.toml' '*.json' '*.md')
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No scannable files changed — gate passes vacuously."
+            exit 0
+          fi
+          fail=0
+          for f in "${files[@]}"; do
+            [ -f "$f" ] || { echo "skip (deleted/non-existent): $f"; continue; }
+            echo "::group::Scanning $f"
+            PYTHONPATH="$GITHUB_WORKSPACE/fleet-rationalization" \
+              python3 -m harness.cli compliance --repo Job-Applications --file "$f" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail

@@ -24,10 +24,11 @@ import shutil
 import subprocess
 import sys
 import uuid
-from dataclasses import asdict
 from collections import Counter
-from datetime import datetime, timezone, timedelta, date
+from dataclasses import asdict
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 try:
     from dotenv import load_dotenv
@@ -77,12 +78,12 @@ def _detect_base_dir() -> Path:
     env_dir = os.environ.get("JOB_APP_BASE_DIR")
     if env_dir:
         return Path(env_dir)
-    mac_nas = Path("/Volumes/job-app-data")
-    if mac_nas.exists() and mac_nas.is_dir():
-        return mac_nas
     linux_nas = Path("/mnt/job-app-data")
     if linux_nas.exists() and linux_nas.is_dir():
         return linux_nas
+    mac_nas = Path("/Volumes/job-app-data")
+    if mac_nas.exists() and mac_nas.is_dir():
+        return mac_nas
     return _DEFAULT_DATA_DIR
 
 
@@ -316,22 +317,22 @@ def _save_postgres_state(state_id: str, payload: dict) -> None:
 
 
 def _get_or_create_evidence_service():
-    """Lazy-load EvidenceService instance (temporary integration point).
-
-    In Gate 6+, this will be replaced with proper dependency injection.
-    For now, we create a minimal instance pointing to the tracker/profile store.
-    """
-    # Placeholder: returns a stub that queries tracker evidence
-    # This will be replaced when Gate 4 (EvidenceService) is integrated
-    # For now, score_match continues to work via Claude's LLM-based scoring
-    # and extracted_requirements are provided for Claude's reference
-
-    class TemporaryEvidenceStub:
-        def query_evidence(self, **filters):
-            # Stub: will be replaced when Gate 4 is integrated
-            return []
-
-    return TemporaryEvidenceStub()
+    """Load or instantiate EvidenceService pointing to ARTEFACTS_DIR/evidence.json."""
+    try:
+        from evidence_persistence import EvidenceRepository
+        from evidence_service import EvidenceService
+        repo = EvidenceRepository(data_dir=str(ARTEFACTS_DIR))
+        return EvidenceService(repo=repo)
+    except Exception as e:
+        logger.warning(f"Could not initialize EvidenceService: {e}")
+        class TemporaryEvidenceStub:
+            def query_evidence(self, **filters):
+                return []
+            def find_duplicates(self, statement):
+                return []
+            def list_evidence(self, filters=None):
+                return []
+        return TemporaryEvidenceStub()
 
 
 _cv_service_instance = None
@@ -391,7 +392,7 @@ def _get_or_create_cv_service():
 # ---------------------------------------------------------------------------
 
 VALID_STAGES = {
-    "new", "applied", "screening",
+    "new", "ready_for_submission", "applied", "screening",
     "offer", "accepted", "rejected", "withdrawn",
 }
 TERMINAL_STAGES = {"accepted", "rejected", "withdrawn"}
@@ -415,6 +416,8 @@ def _is_valid_stage(stage: str) -> bool:
 
 def _allowed_next_stages(stage: str) -> set[str]:
     if stage == "new":
+        return {"ready_for_submission", "applied", "rejected", "withdrawn"}
+    if stage == "ready_for_submission":
         return {"applied", "rejected", "withdrawn"}
     if stage == "applied":
         return {"screening", "rejected", "withdrawn"}
@@ -443,7 +446,8 @@ def _can_advance_to_stage(current_stage: str, new_stage: str) -> bool:
 # Static map retained for compatibility with existing tests/docs. Interview rounds
 # are now generated dynamically by `_allowed_next_stages()` and `_is_valid_stage()`.
 VALID_TRANSITIONS: dict[str, set[str]] = {
-    "new": {"applied", "rejected", "withdrawn"},
+    "new": {"ready_for_submission", "applied", "rejected", "withdrawn"},
+    "ready_for_submission": {"applied", "rejected", "withdrawn"},
     "applied": {"screening", "rejected", "withdrawn"},
     "screening": {"interview_r1", "rejected", "withdrawn"},
     "offer": {"accepted", "rejected", "withdrawn"},
@@ -713,39 +717,129 @@ async def _init_workflow_backend():
     return InMemoryEvidenceBackend()
 
 
+def _resolve_jd_content(application_id: str, jd_path: str | None = None) -> str | None:
+    """Resolve and read job description content from disk/NAS for an application.
+
+    Searches ARTEFACTS_DIR, BASE_DIR, ~/Personal/Jobs, and NAS mount points.
+    Supports markdown (.md) and PDF (.pdf) documents.
+    """
+    company = None
+
+    if not jd_path:
+        tracker = _load_tracker()
+        app = None
+        for a in tracker.get("applications", []):
+            if a.get("id") == application_id or a.get("name") == application_id:
+                app = a
+                break
+        if not app and (_SRC_DIR / "tracker.json").exists() and (_SRC_DIR / "tracker.json") != TRACKER_PATH:
+            try:
+                root_tracker = json.loads((_SRC_DIR / "tracker.json").read_text(encoding="utf-8"))
+                for a in root_tracker.get("applications", []):
+                    if a.get("id") == application_id or a.get("name") == application_id:
+                        app = a
+                        break
+            except Exception:
+                pass
+        if app:
+            jd_path = app.get("jd_path")
+            company = app.get("company")
+
+    candidate_roots = [
+        ARTEFACTS_DIR,
+        BASE_DIR,
+        Path.home() / "Personal" / "Jobs",
+        Path("/Volumes/job-app-data"),
+        Path("/mnt/job-app-data"),
+    ]
+
+    # 1. Check specified jd_path
+    if jd_path:
+        p = Path(jd_path)
+        if p.is_absolute() and p.is_file():
+            if p.suffix.lower() == ".pdf":
+                return _extract_pdf_text(p)
+            return p.read_text(encoding="utf-8")
+
+        for root in candidate_roots:
+            cand = root / jd_path
+            if cand.is_file():
+                if cand.suffix.lower() == ".pdf":
+                    return _extract_pdf_text(cand)
+                return cand.read_text(encoding="utf-8")
+
+    # 2. Check company folder search if company name is known
+    if company:
+        ignore_words = ["cv", "resume", "cover", "note", "background", "infographic", "suggestion", "prep"]
+        for root in candidate_roots:
+            comp_dir = root / company
+            if comp_dir.is_dir():
+                for f in comp_dir.glob("*.md"):
+                    if any(k in f.name.lower() for k in ["jd", "job", "description", "practice", "role"]):
+                        return f.read_text(encoding="utf-8")
+                for f in comp_dir.glob("*.pdf"):
+                    if any(k in f.name.lower() for k in ["jd", "job", "description", "practice", "role"]):
+                        return _extract_pdf_text(f)
+                for f in comp_dir.iterdir():
+                    if f.suffix.lower() == ".md" and not any(w in f.name.lower() for w in ignore_words):
+                        return f.read_text(encoding="utf-8")
+                for f in comp_dir.iterdir():
+                    if f.suffix.lower() == ".pdf" and not any(w in f.name.lower() for w in ignore_words):
+                        return _extract_pdf_text(f)
+
+    return None
+
+
 # Initialize Gate 10 Workflow Tools
 _workflow_backend = asyncio.run(_init_workflow_backend())
 _workflow_tools = WorkflowTools(backend=_workflow_backend)
+_workflow_tools._resolve_jd = _resolve_jd_content
 
 
 # Register Gate 10 workflow tools as MCP endpoints
 @mcp.tool()
-def start_job_application_workflow(job_jd: str, application_id: str, user_name: str) -> dict:
+def start_job_application_workflow(
+    job_jd: str | None = None,
+    application_id: str = "",
+    user_name: str = "Candidate",
+) -> dict:
     """Start interactive evidence discovery & CV workflow (Gate 10).
 
     Analyzes job description, matches existing evidence, and identifies gaps.
 
     Args:
-        job_jd: Job description text
+        job_jd: Job description text (optional if application_id is provided)
         application_id: Unique application identifier
         user_name: User name for personalization
 
     Returns: JD analysis, initial matches, gaps, clarifying questions, and next steps
     """
+    if not job_jd or not str(job_jd).strip():
+        if application_id:
+            resolved = _resolve_jd_content(application_id)
+            if resolved:
+                job_jd = resolved
     result = _workflow_tools.start_job_application_workflow(job_jd, application_id, user_name)
     return result if isinstance(result, dict) else {"error": str(result)}
 
 
 @mcp.tool()
-def generate_clarifying_questions(application_id: str, jd_content: str) -> dict:
+def generate_clarifying_questions(
+    application_id: str,
+    jd_content: str | None = None,
+) -> dict:
     """Generate clarifying questions to fill evidence gaps (Gate 10).
 
     Args:
         application_id: Unique application identifier
-        jd_content: Job description text
+        jd_content: Job description text (optional; auto-resolves from tracked JD if omitted)
 
     Returns: Generated questions with gap type, importance, and response guidance
     """
+    if not jd_content or not str(jd_content).strip():
+        resolved = _resolve_jd_content(application_id)
+        if resolved:
+            jd_content = resolved
     result = _workflow_tools.generate_clarifying_questions(application_id, jd_content)
     return result if isinstance(result, dict) else {"error": str(result)}
 
@@ -794,7 +888,6 @@ def revise_cv(application_id: str, cv_draft: str, revision_notes: str) -> dict:
     return result if isinstance(result, dict) else {"error": str(result)}
 
 
-@mcp.tool()
 def confirm_cv(application_id: str, cv_draft: str, confirmed_by_user: bool) -> dict:
     """Confirm CV as ready for submission (Gate 10).
 
@@ -807,6 +900,102 @@ def confirm_cv(application_id: str, cv_draft: str, confirmed_by_user: bool) -> d
     """
     result = _workflow_tools.confirm_cv(application_id, cv_draft, confirmed_by_user)
     return result if isinstance(result, dict) else {"error": str(result)}
+
+
+@mcp.tool()
+def confirm_final_version(
+    application_id: str,
+    final_md_content: str,
+    export_format: str = "both",
+    significant_evidence: list[dict] | list[str] | None = None,
+    company: str | None = None,
+    role_title: str | None = None,
+    document_type: str = "tailored_cv",
+) -> dict:
+    """Confirm the final reviewed and edited version of the custom markdown file,
+    export it to PDF and/or DOCX format, and pool any significant career evidence into
+    the permanent evidence repository (evidence.json, profile.json, and backend).
+
+    Args:
+        application_id: Unique application identifier.
+        final_md_content: The confirmed final markdown text.
+        export_format: "both" (default), "pdf", or "docx".
+        significant_evidence: Optional list of new evidence items or strings to add to the evidence pool.
+        company: Optional company name. If omitted, looked up from tracker.
+        role_title: Optional role title. If omitted, looked up from tracker.
+        document_type: Either "tailored_cv" or "cover_letter".
+    """
+    tracker = _load_tracker()
+    app = None
+    if tracker and "applications" in tracker:
+        for a in tracker["applications"]:
+            if a.get("id") == application_id or a.get("company", "").lower() == str(company or "").lower():
+                app = a
+                if not company:
+                    company = a.get("company")
+                if not role_title:
+                    role_title = a.get("role_title")
+                break
+
+    # 1. Delegate core file writing and exporting to workflow tools
+    res = _workflow_tools.confirm_final_version(
+        application_id=application_id,
+        final_md=final_md_content,
+        export_formats=export_format,
+        significant_evidence=significant_evidence,
+        company=company,
+        role_title=role_title,
+    )
+    if not res.get("ok"):
+        return res
+
+    # 2. Also ensure company folder and role subfolder on ARTEFACTS_DIR are synced
+    try:
+        if company:
+            company_dir = _resolve_company_folder(company, role_title, tracker)
+            company_dir.mkdir(parents=True, exist_ok=True)
+            doc_filename = "CV_tailored.md" if document_type == "tailored_cv" else "Cover_Letter.md"
+            (company_dir / doc_filename).write_text(final_md_content, encoding="utf-8")
+
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            fmts = ["pdf", "docx"] if export_format == "both" else [export_format]
+            for fmt in fmts:
+                out_path = company_dir / f"{document_type}_{company}_{date_str}.{fmt}"
+                if fmt == "pdf":
+                    _export_to_pdf(company_dir / doc_filename, out_path)
+                elif fmt == "docx":
+                    _export_to_docx(company_dir / doc_filename, out_path)
+                if fmt not in res.get("exported_documents", {}):
+                    res.setdefault("exported_documents", {})[fmt] = str(out_path)
+    except Exception as e:
+        logger.warning(f"Company folder export sync warning: {e}")
+
+    # 3. Update tracker.json
+    if app is not None:
+        outputs = app.setdefault("outputs", {})
+        if document_type == "tailored_cv":
+            outputs["tailored_cv"] = res.get("saved_path")
+        elif document_type == "cover_letter":
+            outputs["cover_letter"] = res.get("saved_path")
+
+        exported_docs = res.get("exported_documents", {})
+        if "pdf" in exported_docs:
+            outputs["tailored_cv_pdf"] = exported_docs["pdf"]
+        if "docx" in exported_docs:
+            outputs["tailored_cv_docx"] = exported_docs["docx"]
+
+        pool_ids = res.get("evidence_pool_ids", [])
+        if pool_ids:
+            existing_pool = set(outputs.get("evidence_pool_contributions", []))
+            existing_pool.update(pool_ids)
+            outputs["evidence_pool_contributions"] = sorted(list(existing_pool))
+
+        app["stage"] = "ready_for_submission"
+        app["status"] = "ready_for_submission"
+        app["last_modified"] = _utc_now()
+        _save_tracker(tracker)
+
+    return res
 
 
 @mcp.tool()
@@ -1725,23 +1914,44 @@ def create_application(company: str, jd_path: str, role_title: str | None = None
 
 
 @mcp.tool()
-def get_application_status(company: str, role_title: str | None = None) -> dict:
+def get_application_status(
+    company: str | None = None,
+    role_title: str | None = None,
+    application_id: str | None = None,
+) -> dict:
     """Check the status of a job application workflow.
 
     Returns which files exist, what's been completed, and what steps remain.
+    Accepts either company (+ optional role_title) or application_id.
 
     Args:
         company: Target employer name (e.g., "Example Company").
         role_title: Optional role title, required to disambiguate companies
             with multiple tracked roles.
+        application_id: Optional application UUID.
     """
     tracker = _load_tracker()
+    app = None
+    if application_id is not None and not company:
+        for a in tracker.get("applications", []):
+            if a.get("id") == application_id:
+                company = a.get("company")
+                role_title = a.get("role_title")
+                app = a
+                break
+        if not company:
+            return {"ok": False, "error": "opportunity_not_found", "application_id": application_id}
+
+    if not company:
+        return {"ok": False, "error": "missing_identifier", "hint": "Provide company or application_id"}
+
     try:
         company_dir = _resolve_company_folder(company, role_title, tracker)
     except AmbiguousRoleError as e:
         return {"ok": False, "error": "ambiguous_role", "company": e.company, "roles": e.roles}
 
-    app = _find_application(tracker, company, role_title)
+    if app is None:
+        app = _find_application(tracker, company, role_title)
 
     if not company_dir.exists():
         return {
@@ -1817,12 +2027,25 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
         outputs = app.get("outputs", {})
         processed_outputs = {}
         for out_type, entries in outputs.items():
-            processed_outputs[out_type] = []
-            for entry in entries:
-                new_entry = dict(entry)
-                if "path" in new_entry:
-                    new_entry["path"] = _absolutize_path(new_entry["path"], company)
-                processed_outputs[out_type].append(new_entry)
+            if isinstance(entries, list):
+                processed_outputs[out_type] = []
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        new_entry = dict(entry)
+                        if "path" in new_entry:
+                            new_entry["path"] = _absolutize_path(new_entry["path"], company)
+                        processed_outputs[out_type].append(new_entry)
+                    else:
+                        processed_outputs[out_type].append(entry)
+            elif isinstance(entries, dict):
+                new_dict = dict(entries)
+                if "path" in new_dict:
+                    new_dict["path"] = _absolutize_path(new_dict["path"], company)
+                processed_outputs[out_type] = new_dict
+            elif isinstance(entries, str) and ("/" in entries or "\\" in entries):
+                processed_outputs[out_type] = _absolutize_path(entries, company)
+            else:
+                processed_outputs[out_type] = entries
         result["outputs"] = processed_outputs
         
         submitted = app.get("submitted", {})
@@ -1833,6 +2056,21 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
                 new_info["path"] = _absolutize_path(new_info["path"], company)
             processed_submitted[doc_type] = new_info
         result["submitted"] = processed_submitted
+        now = datetime.now(timezone.utc)
+        date_created_str = app.get("date_created", "")
+        elapsed_days = None
+        if date_created_str:
+            try:
+                dc = datetime.fromisoformat(date_created_str.replace("Z", "+00:00"))
+                elapsed_days = (now - dc).days
+            except Exception:
+                elapsed_days = None
+        result["id"] = app.get("id")
+        result["days_elapsed"] = elapsed_days
+        result["linkedin_url"] = app.get("metadata", {}).get("linkedin_url") or app.get("jd_source_url")
+        result["jd_path"] = app.get("jd_path")
+        result["history"] = app.get("history", [])
+        result["match_score"] = app.get("match_score")
     else:
         result["tracked"] = False
         result["outputs"] = {}
@@ -1849,100 +2087,71 @@ def get_application_status(company: str, role_title: str | None = None) -> dict:
 
 
 @mcp.tool()
-def update_stage(company: str, role_title: str, new_stage: str) -> dict:
-    """Advance a tracked application to a new pipeline stage.
+def update_application(
+    company: str | None = None,
+    role_title: str | None = None,
+    new_stage: str | None = None,
+    application_id: str | None = None,
+    linkedin_url: str | None = None,
+    interview_round: str | None = None,
+) -> dict:
+    """Update an application's pipeline stage, LinkedIn URL, or interview round.
 
-    Validates the transition against the stage machine (e.g. you can't skip
-    from 'new' straight to 'offer', and terminal stages like 'rejected'
-    accept no further transitions), appends a history entry, and
-    auto-creates/cancels follow-up reminders as appropriate.
+    Validates stage transitions, appends history entries, auto-creates/cancels
+    follow-up reminders. Accepts company + role_title OR application_id.
 
     Args:
         company: Target employer name.
-        role_title: Role title identifying which tracked application to update.
-        new_stage: Target stage — one of: new, applied, screening, offer,
-            accepted, rejected, withdrawn, or any interview round in the form
-            interview_rN where N is a positive integer.
+        role_title: Role title (to disambiguate multiple roles at same employer).
+        new_stage: Target stage (e.g. 'interview_r1', 'applied', 'rejected').
+        application_id: UUID of the application (alternative to company + role_title).
+        linkedin_url: New or updated LinkedIn job posting URL.
+        interview_round: Specific interview label/round.
     """
-    if not _is_valid_stage(new_stage):
-        return {"ok": False, "error": "invalid_stage", "valid_stages": sorted(VALID_STAGES)}
+    from src.tools.lifecycle import update_application as _update_impl
+    return _update_impl(
+        company=company,
+        role_title=role_title,
+        new_stage=new_stage,
+        application_id=application_id,
+        linkedin_url=linkedin_url,
+        interview_round=interview_round,
+    )
 
-    tracker = _load_tracker()
-    app = _find_application(tracker, company, role_title)
-    if app is None:
-        return {"ok": False, "error": "application_not_found", "company": company, "role_title": role_title}
 
-    current_stage = app["stage"]
-    allowed_next = _allowed_next_stages(current_stage)
-    if not _can_advance_to_stage(current_stage, new_stage):
-        return {
-            "ok": False,
-            "error": "invalid_transition",
-            "current_stage": current_stage,
-            "requested_stage": new_stage,
-            "valid_next_stages": sorted(allowed_next),
-        }
-
-    app["stage"] = new_stage
-    app["interview_round"] = _interview_round(new_stage)
-    history_entry = {"stage": new_stage, "at": _utc_now()}
-    if app["interview_round"] is not None:
-        history_entry["interview_round"] = app["interview_round"]
-    app.setdefault("history", []).append(history_entry)
-    _auto_create_followup(app, new_stage)
-    _save_tracker(tracker)
-
-    return {
-        "ok": True,
-        "company": company,
-        "role_title": role_title,
-        "previous_stage": current_stage,
-        "new_stage": new_stage,
-    }
+# Backward-compatible alias for tests and orchestration_consumer.py
+def update_stage(
+    company: str | None = None,
+    role_title: str | None = None,
+    new_stage: str = "",
+    application_id: str | None = None,
+    linkedin_url: str | None = None,
+) -> dict:
+    """Deprecated: Use update_application() instead."""
+    return update_application(
+        company=company,
+        role_title=role_title,
+        new_stage=new_stage or None,
+        application_id=application_id,
+        linkedin_url=linkedin_url,
+    )
 
 
 @mcp.tool()
-def list_applications(company: str | None = None, stage: str | None = None) -> dict:
-    """List tracked job applications, optionally filtered by company and/or stage.
-
-    Results are sorted by date_created descending (most recent first).
+def list_applications(
+    company: str | None = None,
+    stage: str | None = None,
+    include_closed: bool = False,
+) -> dict:
+    """List tracked job applications with pipeline status, elapsed days, and follow-ups.
 
     Args:
-        company: Optional company name filter (case-insensitive).
-        stage: Optional stage filter.
+        company: Optional company name filter (case-insensitive substring match).
+        stage: Optional pipeline stage filter (e.g. 'applied', 'interview_r1').
+        include_closed: If True, include rejected, withdrawn, and closed_won applications.
     """
-    tracker = _load_tracker()
-    apps = tracker.get("applications", [])
-
-    if company is not None:
-        apps = [a for a in apps if a["company"].lower() == company.lower()]
-    if stage is not None:
-        apps = [a for a in apps if a["stage"] == stage]
-
-    apps = sorted(apps, key=lambda a: a["date_created"], reverse=True)
-
-    result = {
-        "count": len(apps),
-        "applications": [
-            {
-                "id": a["id"],
-                "company": a["company"],
-                "role_title": a["role_title"],
-                "stage": a["stage"],
-                "interview_round": a.get("interview_round"),
-                "date_created": a["date_created"],
-            }
-            for a in apps
-        ],
-    }
-
-    if company is not None and len({a["role_title"] for a in apps}) > 1:
-        result["note"] = (
-            f"Multiple roles tracked at {company}; pass role_title to "
-            "company-scoped tools to disambiguate."
-        )
-
-    return result
+    from src.tools.lifecycle import list_applications as _list_impl
+    return _list_impl(company=company, stage=stage, include_closed=include_closed)
 
 
 @mcp.tool()
@@ -2352,6 +2561,49 @@ def score_match(company: str, role_title: str) -> dict:
 
 
 @mcp.tool()
+def save_application_artefact(
+    company: str,
+    document_type: str,
+    content: Any,
+    role_title: str | None = None,
+    section: str | None = None,
+    tone: str | None = None,
+    format: str | None = None,
+) -> dict:
+    """Save an application artefact to disk and record it in the tracker.
+
+    Consolidated persistence endpoint for:
+    - 'research' -> research.md
+    - 'territory_map' -> territory_map.md
+    - 'cover_letter' -> Cover_Letter.md (with versioning)
+    - 'pitch' -> pitch.md
+    - 'gap_analysis' -> gap_analysis.md
+    - 'learning_program' -> learning_program.md
+    - 'interview_notes' -> interview_notes.md (append with timestamp)
+    - 'match_score' -> tracker match_score (requires dict content)
+
+    Args:
+        company: Target employer name.
+        document_type: One of 'research', 'territory_map', 'cover_letter', 'pitch',
+            'gap_analysis', 'learning_program', 'interview_notes', 'match_score'.
+        content: Markdown string content (or dict if document_type='match_score').
+        role_title: Optional role title (required to disambiguate multiple roles).
+        section: Section name when document_type is 'interview_notes' (e.g., 'Recruiter Screen').
+        tone: Tone when document_type is 'cover_letter' ('conversational' or 'formal').
+        format: Format when document_type is 'pitch' ('standard', 'star', or 'brief').
+    """
+    from src.tools.artefacts import save_application_artefact as _save_impl
+    return _save_impl(
+        company=company,
+        document_type=document_type,
+        content=content,
+        role_title=role_title,
+        section=section,
+        tone=tone,
+        format=format,
+    )
+
+
 def save_match_score(
     company: str,
     role_title: str,
@@ -2508,7 +2760,6 @@ def analyse_gaps(company: str, role_title: str) -> dict:
     }
 
 
-@mcp.tool()
 def save_gap_analysis(company: str, role_title: str, gaps: list) -> dict:
     """Validate and save a Gap_Analysis to {Company_Folder}/gap_analysis.md.
 
@@ -2661,7 +2912,6 @@ def generate_learning_program(company: str, role_title: str) -> dict:
     }
 
 
-@mcp.tool()
 def save_learning_program(company: str, role_title: str, program: list) -> dict:
     """Validate and save a Learning_Program to {Company_Folder}/learning_program.md.
 
@@ -2779,8 +3029,7 @@ def company_research(company: str, focus: str = "general") -> dict:
     }
 
 
-@mcp.tool()
-def save_research(company: str, content: str, focus: str = "general") -> dict:
+def save_research(company: str, content: str, focus: str = "general", role_title: str | None = None) -> dict:
     """Save company research content to research.md.
 
     Write the completed research content (typically from the deep-research skill)
@@ -2869,8 +3118,7 @@ def map_territory(company: str, accounts: list[str]) -> dict:
     }
 
 
-@mcp.tool()
-def save_territory_map(company: str, content: str) -> dict:
+def save_territory_map(company: str, content: str, role_title: str | None = None) -> dict:
     """Save territory and contact mapping to territory_map.md.
 
     Formats and saves the contact data gathered from ai-assistant,
@@ -2992,7 +3240,6 @@ def generate_cover_letter(company: str, tone: str = "storyteller") -> dict:
     return result
 
 
-@mcp.tool()
 def save_cover_letter(company: str, content: str, tone: str = "storyteller", role_title: str | None = None) -> dict:
     """Save a cover letter to the company folder.
 
@@ -3106,8 +3353,7 @@ def generate_pitch(company: str, format: str = "narrative") -> dict:
     }
 
 
-@mcp.tool()
-def save_pitch(company: str, content: str, format: str = "narrative") -> dict:
+def save_pitch(company: str, content: str, format: str = "narrative", role_title: str | None = None) -> dict:
     """Save an interview pitch to the company folder.
 
     Args:
@@ -3139,7 +3385,6 @@ def save_pitch(company: str, content: str, format: str = "narrative") -> dict:
     }
 
 
-@mcp.tool()
 def tailor_cv(company: str) -> dict:
     """Prepare context for tailoring a CV to a specific job description.
 
@@ -3228,7 +3473,6 @@ def tailor_cv(company: str) -> dict:
     }
 
 
-@mcp.tool()
 def review_cv_changes(company: str, proposed_content: str) -> dict:
     """Review proposed CV changes and get detailed analysis of protected content.
 
@@ -3352,7 +3596,6 @@ def review_cv_changes(company: str, proposed_content: str) -> dict:
     }
 
 
-@mcp.tool()
 def save_tailored_cv(
     company: str,
     content: str,
@@ -3484,7 +3727,6 @@ def save_tailored_cv(
     }
 
 
-@mcp.tool()
 def save_interview_notes(
     company: str,
     content: str,
@@ -3704,7 +3946,6 @@ def export_document(company: str, document_type: str, format: str, role_title: s
 # Daily Discovery tools (LinkedIn job digest integration)
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
 def review_daily_discoveries(date: str = "") -> dict:
     """Review daily job discoveries from the LinkedIn email digest.
 
@@ -3893,70 +4134,30 @@ def ingest_from_discovery(company: str, date: str) -> dict:
 # ============================================================================
 
 @mcp.tool()
+def get_cv(document_type: str = "base") -> dict:
+    """Retrieve base or reference CV markdown content.
+
+    Args:
+        document_type: 'base' for master ground-truth CV, or 'reference' for keyword pre-filtering CV.
+    """
+    from src.tools.profile_tools import get_cv as _get_cv_impl
+    return _get_cv_impl(document_type=document_type)
+
+
 def get_base_cv() -> dict:
-    """Retrieve the base/reference CV content for CV generation.
-
-    Returns the master CV used as source for tailoring. Required by Gate 10
-    workflow tools when Claude Desktop (remote) needs to access CV content.
-
-    Returns:
-        dict with cv_content (markdown text) and cv_path
-    """
-    try:
-        if not BASE_CV_PATH.exists():
-            return {
-                "error": "base_cv_not_found",
-                "path": str(BASE_CV_PATH),
-                "hint": "Set JOB_APP_BASE_CV_PATH environment variable to a valid CV file path"
-            }
-        content = BASE_CV_PATH.read_text(encoding="utf-8")
-        return {
-            "ok": True,
-            "cv_path": str(BASE_CV_PATH),
-            "cv_content": content,
-            "content_length": len(content)
-        }
-    except Exception as e:
-        return {"error": str(e), "cv_path": str(BASE_CV_PATH)}
+    """Retrieve the base/reference CV content for CV generation."""
+    return get_cv(document_type="base")
 
 
-@mcp.tool()
 def get_reference_cv() -> dict:
-    """Retrieve the reference CV content used for keyword pre-filtering.
-
-    Returns the CV used to filter incoming job opportunities. May differ
-    from the base CV if it's been updated separately.
-
-    Returns:
-        dict with cv_content (markdown text) and cv_path
-    """
-    ref_cv_path = Path(os.environ.get(
-        "JOB_APP_REFERENCE_CV_PATH",
-        str(ARTEFACTS_DIR / "base_cv" / "Reference_CV.md")
-    ))
-    try:
-        if not ref_cv_path.exists():
-            return {
-                "error": "reference_cv_not_found",
-                "path": str(ref_cv_path),
-                "hint": "Set JOB_APP_REFERENCE_CV_PATH to a valid CV file path"
-            }
-        content = ref_cv_path.read_text(encoding="utf-8")
-        return {
-            "ok": True,
-            "cv_path": str(ref_cv_path),
-            "cv_content": content,
-            "content_length": len(content)
-        }
-    except Exception as e:
-        return {"error": str(e), "cv_path": str(ref_cv_path)}
+    """Retrieve the reference CV content used for keyword pre-filtering."""
+    return get_cv(document_type="reference")
 
 
 # ============================================================================
 # Gate 9: Evidence-based CV Generation via LLM (Task 10)
 # ============================================================================
 
-@mcp.tool()
 def generate_cv_from_jd_with_evidence(
     ground_truth_cv_id: str,
     job_description: str,
@@ -4108,7 +4309,6 @@ def _find_opportunity_url(company: str, role_title: str | None, date_created: da
         return None
 
 
-@mcp.tool()
 def list_applied_opportunities(
     stage: str | None = None,
     company: str | None = None,
@@ -4269,6 +4469,7 @@ def list_opportunities(
 
 @mcp.tool()
 def list_job_discoveries(
+    date: str = "",
     limit: int | None = None,
     days_back: int = 1,
     include_below_threshold: bool = False,
@@ -4280,22 +4481,13 @@ def list_job_discoveries(
     can be included for audit/review.
 
     Args:
+        date: Specific digest date string (YYYY-MM-DD). If empty, looks back days_back from today.
         limit: Maximum number of opportunities to return (default: all).
         days_back: Number of days to look back (default: 1 for today only).
         include_below_threshold: Include rejected cards and their reasons.
 
     Returns:
-        Dictionary with:
-        - total: count of job opportunities found
-        - date: digest date (YYYY-MM-DD)
-        - discoveries: list of job objects with:
-            - company: company name
-            - role_title: job title
-            - location: job location
-            - url: direct LinkedIn job URL
-            - category: "surfaced" (relevant) or "below_threshold" (less relevant)
-            - reason: rejection reason (below-threshold cards only)
-        - backend: which backend was used (filesystem digest or in-memory)
+        Dictionary with total, discoveries, date, filter_applied, and backend.
     """
     try:
         # Parse job discoveries from daily digest files
@@ -4310,9 +4502,15 @@ def list_job_discoveries(
                 "backend": "none"
             }
 
-        # Get today's date and look back
-        today = date.today()
-        target_dates = [today - timedelta(days=i) for i in range(days_back)]
+        if date:
+            from datetime import date as _dt_date
+            try:
+                target_dates = [_dt_date.fromisoformat(date)]
+            except Exception:
+                target_dates = []
+        else:
+            today = _date_today = __import__("datetime").date.today()
+            target_dates = [_date_today - timedelta(days=i) for i in range(days_back)]
 
         import re
 
@@ -4421,131 +4619,28 @@ def list_job_discoveries(
 
 @mcp.tool()
 def get_opportunity(opportunity_id: str) -> dict:
-    """Get detailed information about a specific opportunity.
+    """Get detailed information about a specific opportunity by UUID.
 
-    Loads from PostgreSQL backend if available, falls back to tracker.json.
+    Returns full opportunity details including stage, history, follow-ups,
+    JD availability, and LinkedIn URL.
 
     Args:
-        opportunity_id: UUID of the opportunity (from list_opportunities).
-
-    Returns:
-        Dictionary with full opportunity details including:
-        - id, company, role_title, stage
-        - full history of stage transitions with timestamps
-        - all followups with status
-        - jd_path pointing to saved job description
-        - linkedin_url if available
+        opportunity_id: UUID of the opportunity (from list_applications).
     """
-    try:
-        using_database = False
-        tracker_data = None
-
-        tracker_data = _load_tracker()
-        using_database = STORAGE_BACKEND == "postgres"
-
-        for app in tracker_data.get("applications", []):
-            if app.get("id") == opportunity_id:
-                # Enhance with elapsed time
-                now = datetime.now(timezone.utc)
-                date_created_str = app.get("date_created", "")
-                elapsed_days = None
-                if date_created_str:
-                    try:
-                        date_created = datetime.fromisoformat(date_created_str.replace("Z", "+00:00"))
-                        elapsed_days = (now - date_created).days
-                    except (ValueError, AttributeError):
-                        elapsed_days = None
-
-                # Get LinkedIn URL from metadata or search digests
-                linkedin_url = None
-                if app.get("metadata", {}).get("linkedin_url"):
-                    linkedin_url = app["metadata"]["linkedin_url"]
-                else:
-                    linkedin_url = _find_opportunity_url(
-                        company=app.get("company"),
-                        role_title=app.get("role_title"),
-                        date_created=datetime.fromisoformat(date_created_str.replace("Z", "+00:00")) if date_created_str else None
-                    )
-
-                return {
-                    "found": True,
-                    "id": app.get("id"),
-                    "company": app.get("company"),
-                    "role_title": app.get("role_title"),
-                    "stage": app.get("stage", "unknown"),
-                    "interview_round": app.get("interview_round"),
-                    "date_created": date_created_str,
-                    "days_elapsed": elapsed_days,
-                    "jd_path": app.get("jd_path"),
-                    "linkedin_url": linkedin_url,
-                    "history": app.get("history", []),
-                    "followups": app.get("followups", []),
-                    "backend": "PostgreSQL" if using_database else "in-memory"
-                }
-
-        return {
-            "error": f"Opportunity {opportunity_id} not found",
-            "found": False,
-            "backend": "PostgreSQL" if using_database else "in-memory"
-        }
-
-    except Exception as e:
-        logger.error(f"Error getting opportunity {opportunity_id}: {e}")
-        return {
-            "error": str(e),
-            "found": False,
-            "backend": "error"
-        }
+    # Delegate to get_application_status which supports application_id lookup
+    return get_application_status(application_id=opportunity_id)
 
 
 @mcp.tool()
 def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
     """Update the LinkedIn URL for an opportunity.
 
-    Stores the LinkedIn job URL in tracker metadata for quick reference.
-    This enables direct clickable links in list_opportunities output.
-
     Args:
         opportunity_id: UUID of the opportunity.
-        linkedin_url: Direct LinkedIn job URL (e.g., linkedin.com/comm/jobs/view/1234567).
-
-    Returns:
-        Dictionary with success status and updated opportunity data.
+        linkedin_url: Direct LinkedIn job URL.
     """
-    try:
-        tracker_data = _load_tracker()
-
-        updated = False
-        for app in tracker_data.get("applications", []):
-            if app.get("id") == opportunity_id:
-                # Initialize metadata if not present
-                if "metadata" not in app:
-                    app["metadata"] = {}
-
-                app["metadata"]["linkedin_url"] = linkedin_url
-                updated = True
-                break
-
-        if not updated:
-            return {
-                "success": False,
-                "error": f"Opportunity {opportunity_id} not found"
-            }
-
-        _save_tracker(tracker_data)
-
-        return {
-            "success": True,
-            "opportunity_id": opportunity_id,
-            "linkedin_url": linkedin_url
-        }
-
-    except Exception as e:
-        logger.error(f"Error updating opportunity URL: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+    from src.tools.lifecycle import update_application as _update_impl
+    return _update_impl(application_id=opportunity_id, linkedin_url=linkedin_url)
 
 
 if __name__ == "__main__":
