@@ -2,7 +2,7 @@ name: Fleet DevSecOps & Harness Gate
 
 on:
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, test/harness-gate-base ]
 
 jobs:
   devsecops-gate:
