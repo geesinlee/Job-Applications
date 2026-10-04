@@ -1,0 +1,36 @@
+name: Fleet DevSecOps & Harness Gate
+
+on:
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  devsecops-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout fleet-rationalization (harness engine)
+        uses: actions/checkout@v4
+        with:
+          repository: geesinlee/infra-control-plane
+          token: ${{ secrets.FLEET_INFRA_PAT }}
+          path: fleet-rationalization
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Generate PR diff
+        run: |
+          git fetch origin "$GITHUB_BASE_REF"
+          git diff "origin/$GITHUB_BASE_REF...HEAD" > pr.diff
+          echo "Diff size: $(wc -l < pr.diff) lines"
+
+      - name: Run Fleet Harness Compliance Gate
+        run: |
+          PYTHONPATH="$GITHUB_WORKSPACE/fleet-rationalization" \
+            python3 -m harness.cli compliance --repo Job-Applications --file pr.diff
