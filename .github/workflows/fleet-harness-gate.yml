@@ -24,6 +24,11 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install harness dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install pydantic
+
       - name: Generate PR diff
         run: |
           git fetch origin "$GITHUB_BASE_REF"
