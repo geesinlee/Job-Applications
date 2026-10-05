@@ -1,5 +1,7 @@
+import json
 import logging
 import os
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -91,6 +93,44 @@ class GeminiProvider(LLMProvider):
             raise
 
 
+class OllamaProvider(LLMProvider):
+    """LLM provider for local Ollama (chat API)."""
+
+    def __init__(self, base_url: Optional[str] = None):
+        self.base_url = (
+            base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        ).rstrip("/")
+
+    def generate_text(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        max_tokens: int = 2000,
+    ) -> str:
+        model = model or os.getenv("OLLAMA_MODEL", "llama3.2")
+        payload = json.dumps(
+            {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+                "options": {"num_predict": max_tokens},
+            }
+        ).encode("utf-8")
+        request = urllib.request.Request(
+            f"{self.base_url}/api/chat",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                data = json.loads(response.read())
+            return data["message"]["content"]
+        except Exception as exc:
+            logger.error("Ollama API error: %s", exc)
+            raise
+
+
 class MockProvider(LLMProvider):
     """Mock provider for local testing without API keys."""
 
@@ -136,4 +176,6 @@ def get_llm_provider() -> LLMProvider:
         return GeminiProvider()
     if provider_name == "anthropic":
         return AnthropicProvider()
+    if provider_name == "ollama":
+        return OllamaProvider()
     return MockProvider()
