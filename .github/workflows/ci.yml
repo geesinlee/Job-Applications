@@ -65,6 +65,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
 
+      - name: Configure SSH for private fleet deps
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.FLEET_NOTIFY_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
+
       - name: Install Python Dependencies
         run: |
           pip install --upgrade pip

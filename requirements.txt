@@ -21,4 +21,4 @@ langchain-google-genai>=0.1.0
 langchain-core>=0.1.0
 
 # Fleet shared notification library (email / osascript / ntfy) — app_health, job_digest, tracker_daily
-fleet-notify @ git+https://github.com/geesinlee/fleet-notify@v0.1.0
+fleet-notify @ git+ssh://git@github.com/geesinlee/fleet-notify@v0.1.0
