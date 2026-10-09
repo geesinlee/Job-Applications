@@ -1,7 +1,5 @@
-import json
 import logging
 import os
-import urllib.request
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -94,12 +92,14 @@ class GeminiProvider(LLMProvider):
 
 
 class OllamaProvider(LLMProvider):
-    """LLM provider for local Ollama (chat API)."""
+    """LLM provider for local or private-network Ollama endpoint."""
 
-    def __init__(self, base_url: Optional[str] = None):
+    def __init__(self):
         self.base_url = (
-            base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            os.getenv("OLLAMA_BASE_URL")
+            or "http://127.0.0.1:11434"
         ).rstrip("/")
+        self.model = os.getenv("OLLAMA_MODEL") or os.getenv("EVIDENCE_LLM_MODEL") or "llama3.2:3b"
 
     def generate_text(
         self,
@@ -107,25 +107,31 @@ class OllamaProvider(LLMProvider):
         model: Optional[str] = None,
         max_tokens: int = 2000,
     ) -> str:
-        model = model or os.getenv("OLLAMA_MODEL", "llama3.2")
-        payload = json.dumps(
-            {
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "options": {"num_predict": max_tokens},
-            }
-        ).encode("utf-8")
-        request = urllib.request.Request(
+        import json
+        import urllib.request
+
+        active_model = model or self.model
+        payload = {
+            "model": active_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "options": {"num_predict": max_tokens},
+        }
+        # Qwen3-style thinking models emit long internal-reasoning blocks by
+        # default; ollama's `think: false` skips them (no-op for other models).
+        if os.getenv("OLLAMA_DISABLE_THINK", "true").lower() != "false":
+            payload["think"] = False
+        req = urllib.request.Request(
             f"{self.base_url}/api/chat",
-            data=payload,
+            data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        timeout = int(os.getenv("OLLAMA_TIMEOUT", "120"))
         try:
-            with urllib.request.urlopen(request) as response:
-                data = json.loads(response.read())
-            return data["message"]["content"]
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                return data["message"]["content"]
         except Exception as exc:
             logger.error("Ollama API error: %s", exc)
             raise
