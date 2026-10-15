@@ -702,6 +702,10 @@ def write_digest_markdown(
         lines.append("")
 
     filepath.write_text("\n".join(lines), encoding="utf-8")
+    try:
+        filepath.chmod(0o644)
+    except OSError:
+        pass
     return filepath
 
 

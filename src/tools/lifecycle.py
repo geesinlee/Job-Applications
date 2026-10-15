@@ -90,6 +90,7 @@ def list_applications(
             "stage": app_stage,
             "interview_round": app.get("interview_round"),
             "date_created": date_created_str,
+            "applied_at": app.get("applied_at"),
             "days_elapsed": elapsed_days,
             "linkedin_url": linkedin_url,
             "next_followup": next_followup,
@@ -359,3 +360,200 @@ def update_application(
         result["previous_stage"] = previous_stage
         result["new_stage"] = new_stage
     return result
+
+
+# Stages that mean a record has actually been applied. Interview rounds
+# (interview_rN) are matched via regex; 'closed_won' is stale legacy naming
+# kept defensively so old records are not falsely blocked. Terminal exits
+# ('rejected'/'withdrawn') are resolved by _has_reached_applied via history.
+_APPLIED_OR_LATER_STAGES = {"applied", "screening", "offer", "accepted", "closed_won"}
+
+
+def _has_reached_applied(app: dict) -> bool:
+    """Return True if this application record has actually been applied.
+
+    Stage gate for set_applied_date. Direct membership covers records currently
+    at an applied-or-later stage (interview_rN counts; import
+    job_applications_mcp_server as server inside the body — repo idiom — and
+    use server._is_interview_stage).
+
+    The judgment call: 'rejected'/'withdrawn' are reachable both from 'new'
+    (never applied) and from 'applied'+ (was applied). Only the record's
+    'history' can tell them apart — a history entry with stage == 'applied'
+    counts as proof; everything else is False.
+    """
+    import job_applications_mcp_server as server
+
+    stage = app.get("stage") or ""
+    if stage in _APPLIED_OR_LATER_STAGES or server._is_interview_stage(stage):
+        return True
+    if stage in ("rejected", "withdrawn"):
+        return any(
+            isinstance(entry, dict) and entry.get("stage") == "applied"
+            for entry in app.get("history", [])
+        )
+    return False
+
+
+def set_applied_date(
+    application_id: str,
+    applied_date: str,
+    approved_by_user: bool = False,
+    force: bool = False,
+    reason: Optional[str] = None,
+    tracker_loader: Optional[Callable[[], dict]] = None,
+    tracker_saver: Optional[Callable[[dict], None]] = None,
+) -> dict:
+    """Set the actual date a job application was submitted (backdating support).
+
+    date_created reflects when tracking started, not when the user applied.
+    Strictly validated: ID-only lookup, stage gate, ISO-8601 within the last
+    12 months (inclusive), no future dates, confirm-gate dry run by default,
+    immutable once set (force=True to overwrite), audit entry per write.
+    """
+    import job_applications_mcp_server as server
+
+    if tracker_loader is None:
+        tracker_loader = server._load_tracker
+    if tracker_saver is None:
+        tracker_saver = server._save_tracker
+
+    if not isinstance(application_id, str) or not application_id.strip():
+        return {
+            "ok": False,
+            "error": "missing_application_id",
+            "hint": "Provide the application UUID (get ids from list_applications).",
+        }
+    application_id = application_id.strip()
+
+    if not isinstance(applied_date, str) or not applied_date.strip():
+        return {
+            "ok": False,
+            "error": "missing_applied_date",
+            "hint": "Provide the real application date, ISO-8601 (e.g. '2026-06-01').",
+        }
+
+    try:
+        parsed = datetime.fromisoformat(applied_date.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return {
+            "ok": False,
+            "error": "invalid_applied_date",
+            "applied_date": applied_date,
+            "expected_format": "ISO-8601, e.g. '2026-06-01' or '2026-06-01T09:30:00Z'",
+        }
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    else:
+        parsed = parsed.astimezone(timezone.utc)
+    normalized = parsed.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    now = datetime.now(timezone.utc)
+
+    tracker = tracker_loader()
+    app = None
+    for a in tracker.get("applications", []):
+        if a.get("id") == application_id:
+            app = a
+            break
+    if app is None:
+        return {
+            "ok": False,
+            "error": "application_not_found",
+            "application_id": application_id,
+            "hint": "Use list_applications to find the record id.",
+        }
+
+    if not _has_reached_applied(app):
+        return {
+            "ok": False,
+            "error": "stage_not_applied",
+            "application_id": application_id,
+            "current_stage": app.get("stage"),
+            "hint": "Only records at stage 'applied' or later can carry an applied date.",
+        }
+
+    if parsed > now:
+        return {
+            "ok": False,
+            "error": "future_date",
+            "applied_date": normalized,
+            "today": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+
+    try:
+        cutoff = now.replace(year=now.year - 1)
+    except ValueError:  # Feb 29 -> non-leap target year
+        cutoff = now.replace(year=now.year - 1, day=28)
+    if parsed < cutoff:
+        return {
+            "ok": False,
+            "error": "out_of_range",
+            "applied_date": normalized,
+            "earliest_allowed": cutoff.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "hint": "Backdating is limited to the last 12 months (boundary inclusive).",
+        }
+
+    current = app.get("applied_at")
+    if current and not force:
+        return {
+            "ok": False,
+            "error": "already_set",
+            "application_id": application_id,
+            "current_applied_at": current,
+            "hint": "applied_at is immutable once set; pass force=True to overwrite.",
+        }
+
+    audit_entry = {
+        "field": "applied_at",
+        "old": current,
+        "new": normalized,
+        "at": server._utc_now(),
+        "reason": reason,
+        "forced": bool(force),
+    }
+
+    if not approved_by_user:
+        return {
+            "ok": False,
+            "error": "requires_approval",
+            "requires_review": True,
+            "application_id": application_id,
+            "company": app.get("company"),
+            "role_title": app.get("role_title"),
+            "stage": app.get("stage"),
+            "preview": {
+                "field": "applied_at",
+                "current_applied_at": current,
+                "new_applied_at": normalized,
+                "is_overwrite": bool(current),
+                "checks": {
+                    "id_found": True,
+                    "stage_at_or_after_applied": True,
+                    "date_format": True,
+                    "not_future": True,
+                    "within_12_months": True,
+                    "immutability": "ok_with_force" if current else "ok",
+                },
+            },
+            "audit_would_append": audit_entry,
+            "hint": "Validation passed. Re-run with approved_by_user=True to apply"
+                    + (" (add force=True to overwrite the existing date)." if current else "."),
+        }
+
+    app["applied_at"] = normalized
+    app.setdefault("audit", []).append(audit_entry)
+    tracker_saver(tracker)
+
+    return {
+        "ok": True,
+        "application_id": application_id,
+        "company": app.get("company"),
+        "role_title": app.get("role_title"),
+        "stage": app.get("stage"),
+        "applied_at": normalized,
+        "previous_applied_at": current,
+        "forced": bool(force),
+        "audit_entry": audit_entry,
+        "audit_count": len(app["audit"]),
+    }

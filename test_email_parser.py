@@ -248,3 +248,74 @@ class TestParseEdgeCases:
         """Passing None as html should not crash — return empty list."""
         cards = parse_linkedin_email(None, "msg9", "2026-08-06T00:00:00Z")  # type: ignore[arg-type]
         assert cards == []
+
+
+# ---------------------------------------------------------------------------
+# Test: 2026 LinkedIn table digest format (multi-card company/URL isolation)
+# ---------------------------------------------------------------------------
+
+LINKEDIN_2026_TABLE_DIGEST_HTML = """\
+<html><body>
+<table>
+  <tbody>
+    <tr>
+      <td><a href="https://www.linkedin.com/comm/jobs/view/9001/"><img src="logo1.png"/></a></td>
+      <td>
+        <a href="https://www.linkedin.com/comm/jobs/view/9001/">
+          <p>Maritime AI Engineer</p>
+          <p class="text-system-gray-100 text-xs">Orca AI · Singapore (Hybrid)</p>
+          <p class="text-system-gray-100 text-xs">Actively recruiting</p>
+        </a>
+        <a href="https://www.linkedin.com/comm/jobs/view/9001/">Maritime AI Engineer</a>
+      </td>
+    </tr>
+    <tr>
+      <td><a href="https://www.linkedin.com/comm/jobs/view/9002/"><img src="logo2.png"/></a></td>
+      <td>
+        <a href="https://www.linkedin.com/comm/jobs/view/9002/">
+          <p>Strategic Deals Lead, Enterprise Agreements</p>
+          <p class="text-system-gray-100 text-xs">NetApp · Singapore</p>
+          <p class="text-system-gray-100 text-xs">2 connectionsEasy Apply</p>
+        </a>
+        <a href="https://www.linkedin.com/comm/jobs/view/9002/">Strategic Deals Lead, Enterprise Agreements</a>
+      </td>
+    </tr>
+    <tr>
+      <td><a href="https://www.linkedin.com/comm/jobs/view/9003/"><img src="logo3.png"/></a></td>
+      <td>
+        <a href="https://www.linkedin.com/comm/jobs/view/9003/">Lead Client Partner - Google Cloud Platform</a>
+        <p class="text-system-gray-100 text-xs">Google · Singapore (Hybrid)</p>
+        <a href="https://www.linkedin.com/comm/jobs/view/9003/">View job</a>
+      </td>
+    </tr>
+  </tbody>
+</table>
+</body></html>
+"""
+
+
+class TestParse2026LinkedInDigest:
+    """Ensure multi-card 2026 LinkedIn digest emails never bleed company names across cards."""
+
+    def test_each_card_preserves_own_company_and_url(self) -> None:
+        cards = parse_linkedin_email(
+            LINKEDIN_2026_TABLE_DIGEST_HTML,
+            "msg2026",
+            "2026-10-07T02:00:00Z",
+        )
+        assert len(cards) == 3
+
+        assert cards[0].company == "Orca AI"
+        assert cards[0].title == "Maritime AI Engineer"
+        assert cards[0].location == "Singapore (Hybrid)"
+        assert "9001" in cards[0].url
+
+        assert cards[1].company == "NetApp"
+        assert cards[1].title == "Strategic Deals Lead, Enterprise Agreements"
+        assert cards[1].location == "Singapore"
+        assert "9002" in cards[1].url
+
+        assert cards[2].company == "Google"
+        assert cards[2].title == "Lead Client Partner - Google Cloud Platform"
+        assert cards[2].location == "Singapore (Hybrid)"
+        assert "9003" in cards[2].url

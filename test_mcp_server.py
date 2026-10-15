@@ -358,7 +358,7 @@ class TestListApplications:
 
         tracker = _load_tracker()
         app = tracker["applications"][0]
-        assert tracker["schema_version"] == "1.1"
+        assert tracker["schema_version"] == "1.2"
         assert app["interview_round"] == 3
         assert app["history"][1]["interview_round"] == 3
 

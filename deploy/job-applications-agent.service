@@ -1,0 +1,20 @@
+[Unit]
+Description=Job Applications Autonomous Agent Daemon (Kafka Consumer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/gs/Projects/Job-Applications
+ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python /home/gs/Projects/Job-Applications/scripts/job_applications_agent.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+Environment=KAFKA_BOOTSTRAP_SERVERS=rv-cloud.tail210e4f.ts.net:9092
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=job-app-agent
+
+[Install]
+WantedBy=default.target

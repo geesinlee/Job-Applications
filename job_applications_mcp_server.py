@@ -100,7 +100,7 @@ NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")
 STORAGE_BACKEND = os.environ.get("JOB_APP_STORAGE_BACKEND", "file").lower()
 MCP_MODE = os.environ.get("MCP_MODE", "stdio")         # "stdio" | "http"
 MCP_AUTH_TOKEN = os.environ.get("MCP_AUTH_TOKEN", "")
-TRACKER_SCHEMA_VERSION = "1.1"
+TRACKER_SCHEMA_VERSION = "1.2"
 
 # ---------------------------------------------------------------------------
 # Startup validation
@@ -208,6 +208,9 @@ def _normalize_tracker(data: dict) -> dict:
             continue
         stage = app.get("stage")
         app["interview_round"] = _interview_round(stage) if isinstance(stage, str) else None
+        app.setdefault("applied_at", None)
+        if not isinstance(app.get("audit"), list):
+            app["audit"] = []
         history = app.get("history", [])
         if isinstance(history, list):
             for entry in history:
@@ -278,6 +281,18 @@ def _run_postgres(operation):
         finally:
             await db.disconnect()
 
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # HTTP transport runs tools inside an asyncio loop; Prisma's sync
+        # wrapper calls asyncio.run() internally, which is illegal there.
+        # Offload to a private thread (mirrors src/tools/_state.py run_postgres).
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(wrapped())).result()
     return asyncio.run(wrapped())
 
 
@@ -578,10 +593,12 @@ def _create_application_record(company: str, role_title: str, jd_path: str) -> d
         "stage": "new",
         "interview_round": None,
         "date_created": now,
+        "applied_at": None,
         "history": [{"stage": "new", "at": now}],
         "followups": [],
         "outputs": {},
         "submitted": {},
+        "audit": [],
     }
 
 
@@ -2152,6 +2169,63 @@ def list_applications(
     """
     from src.tools.lifecycle import list_applications as _list_impl
     return _list_impl(company=company, stage=stage, include_closed=include_closed)
+
+
+@mcp.tool()
+def set_applied_date(
+    application_id: str,
+    applied_date: str,
+    approved_by_user: bool = False,
+    force: bool = False,
+    reason: str | None = None,
+) -> dict:
+    """Set the actual date a job application was submitted (backdating support).
+
+    Records are sometimes created months after the real application was sent;
+    date_created reflects when tracking started, not when you applied. This tool
+    sets `applied_at` — the true application date — on exactly one record,
+    identified by its stable UUID (get ids from list_applications).
+
+    Safety model (dry-run by default):
+    - Without approved_by_user=True, the call validates everything and returns a
+      preview of the pending change (error code 'requires_approval'); nothing
+      is written.
+    - With approved_by_user=True, the date is written and a permanent audit entry
+      (old value, new value, timestamp, optional reason) is appended to the record.
+
+    Validation rules:
+    - ID-only lookup: application_id must exactly match a tracked record.
+    - The record must already be at stage 'applied' or later (screening,
+      interview_rN, offer, accepted; rejected/withdrawn count only if the record
+      passed through 'applied').
+    - applied_date must be ISO-8601 ('YYYY-MM-DD' or full datetime; stored as UTC
+      ISO Z), not in the future, and within the last 12 months (boundary inclusive).
+    - applied_at is immutable once set; overwriting requires force=True.
+
+    Args:
+        application_id: UUID of the application record (from list_applications).
+        applied_date: The real application date, ISO-8601 (e.g. '2026-06-01').
+        approved_by_user: Set True to actually write. Default False = preview only.
+        force: Required True to overwrite an already-set applied_at.
+        reason: Optional note stored in the audit entry (e.g. why it was backdated).
+
+    Returns:
+        Unconfirmed: {'ok': False, 'error': 'requires_approval',
+        'requires_review': True, 'preview': {...}} — nothing written.
+        Success: {'ok': True, 'applied_at': ..., 'previous_applied_at': ...,
+        'audit_entry': {...}}.
+        Errors: {'ok': False, 'error': <code>} — codes: missing_application_id,
+        missing_applied_date, invalid_applied_date, application_not_found,
+        stage_not_applied, future_date, out_of_range, already_set.
+    """
+    from src.tools.lifecycle import set_applied_date as _set_applied_date_impl
+    return _set_applied_date_impl(
+        application_id=application_id,
+        applied_date=applied_date,
+        approved_by_user=approved_by_user,
+        force=force,
+        reason=reason,
+    )
 
 
 @mcp.tool()
@@ -4309,6 +4383,7 @@ def _find_opportunity_url(company: str, role_title: str | None, date_created: da
         return None
 
 
+@mcp.tool()
 def list_applied_opportunities(
     stage: str | None = None,
     company: str | None = None,
@@ -4644,6 +4719,14 @@ def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
 
 
 if __name__ == "__main__":
+    # Running as a script executes this file as __main__ only. The src/tools/*
+    # impls import it by module name, which would otherwise re-execute the
+    # whole module — including module-level asyncio.run() at import time —
+    # inside the server's running event loop on the first tool call
+    # ("asyncio.run() cannot be called from a running event loop"). Alias the
+    # module so that import resolves to this already-initialized module.
+    sys.modules.setdefault("job_applications_mcp_server", sys.modules[__name__])
+
     if MCP_MODE == "http":
         from starlette.routing import Route
 
