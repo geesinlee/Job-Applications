@@ -28,7 +28,7 @@ from collections import Counter
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional, List
 
 try:
     from dotenv import load_dotenv
@@ -876,17 +876,28 @@ def answer_clarifying_questions(application_id: str, answers: dict) -> dict:
 
 
 @mcp.tool()
-def generate_cv_draft(application_id: str, jd_content: str, evidence_items: list) -> dict:
-    """Generate tailored CV draft from matched evidence (Gate 10).
+def generate_cv_draft(
+    application_id: str,
+    jd_content: str,
+    evidence_items: list,
+    work_rag_evidence: Optional[list] = None,
+) -> dict:
+    """Generate tailored CV draft from matched evidence and Work-RAG archive evidence (Gate 10).
 
     Args:
         application_id: Unique application identifier
         jd_content: Job description text
         evidence_items: List of matched evidence items
+        work_rag_evidence: Optional list of verified work evidence items retrieved from Work-RAG
 
     Returns: Tailored CV draft with matched sections and confidence scores
     """
-    result = _workflow_tools.generate_cv_draft(application_id, jd_content, evidence_items)
+    result = _workflow_tools.generate_cv_draft(
+        application_id,
+        jd_content,
+        evidence_items,
+        work_rag_evidence=work_rag_evidence,
+    )
     return result if isinstance(result, dict) else {"error": str(result)}
 
 
@@ -2111,19 +2122,28 @@ def update_application(
     application_id: str | None = None,
     linkedin_url: str | None = None,
     interview_round: str | None = None,
+    new_company: str | None = None,
+    new_role_title: str | None = None,
 ) -> dict:
-    """Update an application's pipeline stage, LinkedIn URL, or interview round.
+    """Update an application's pipeline stage, LinkedIn URL, interview round, or rename company/title.
 
     Validates stage transitions, appends history entries, auto-creates/cancels
     follow-up reminders. Accepts company + role_title OR application_id.
 
     Args:
-        company: Target employer name.
+        company: Target employer name. Used only as a lookup key to locate the record.
         role_title: Role title (to disambiguate multiple roles at same employer).
+            Used only as a lookup key to locate the record.
         new_stage: Target stage (e.g. 'interview_r1', 'applied', 'rejected').
         application_id: UUID of the application (alternative to company + role_title).
         linkedin_url: New or updated LinkedIn job posting URL.
         interview_round: Specific interview label/round.
+        new_company: Rename target for the stored employer name. Distinct from the
+            `company` lookup key: when provided, the located record's `company` is
+            rewritten to this value and persisted.
+        new_role_title: Rename target for the stored role title. Distinct from the
+            `role_title` lookup key: when provided, the located record's `role_title`
+            is rewritten to this value and persisted.
     """
     from src.tools.lifecycle import update_application as _update_impl
     return _update_impl(
@@ -2133,6 +2153,8 @@ def update_application(
         application_id=application_id,
         linkedin_url=linkedin_url,
         interview_round=interview_round,
+        new_company=new_company,
+        new_role_title=new_role_title,
     )
 
 
@@ -2401,6 +2423,7 @@ def ingest_jd(
         "jd_path": str(jd_md),
         "jd_length": len(jd_text),
         "fields": fields,
+        "backend": "PostgreSQL" if STORAGE_BACKEND == "postgres" else STORAGE_BACKEND,
     }
     if reference_url:
         result["jd_source_url"] = reference_url
@@ -2791,6 +2814,37 @@ def analyse_gaps(company: str, role_title: str) -> dict:
     # Identify gaps
     gaps = req_service.identify_gaps(requirements, evidence_matches)
 
+    # Work-RAG Evidence Enrichment (Epic JOBS-11)
+    work_rag_evidence = []
+    gap_dicts = [
+        {
+            "requirement": gap.requirement_statement,
+            "type": gap.type.value,
+            "status": gap.status.value,
+            "reasoning": gap.reasoning,
+        }
+        for gap in gaps
+    ]
+    if gap_dicts or missing_skills:
+        try:
+            from src.tools.work_rag_adapter import WorkRagQueryPlanner, WorkRagClient, CareerEvidenceEnricher
+            planned_queries = WorkRagQueryPlanner.plan_queries(
+                company=company,
+                role_title=role_title,
+                gaps=gap_dicts,
+                missing_skills=missing_skills,
+                max_queries=3,
+            )
+            client = WorkRagClient()
+            raw_chunks = []
+            for q in planned_queries:
+                chunks = client.search_hybrid(q, limit=2)
+                raw_chunks.extend(chunks)
+            if raw_chunks:
+                work_rag_evidence = CareerEvidenceEnricher.synthesize_evidence_items(raw_chunks, max_items=4)
+        except Exception as e:
+            logger.warning("Work-RAG gap enrichment failed: %s", e)
+
     return {
         "ok": True,
         "company": company,
@@ -2799,15 +2853,8 @@ def analyse_gaps(company: str, role_title: str) -> dict:
         "base_cv_content": base_cv_content,
         "missing_skills": missing_skills,
         "match_score_available": match_score is not None,
-        "extracted_gaps": [
-            {
-                "requirement": gap.requirement_statement,
-                "type": gap.type.value,
-                "status": gap.status.value,
-                "reasoning": gap.reasoning,
-            }
-            for gap in gaps
-        ],
+        "extracted_gaps": gap_dicts,
+        "work_rag_evidence": work_rag_evidence,
         "gap_schema": {
             "gap_id": "unique string identifier",
             "category": "missing | understated | mismatch",
@@ -2818,19 +2865,80 @@ def analyse_gaps(company: str, role_title: str) -> dict:
         },
         "instructions": (
             "Compare the JD's required and preferred criteria in jd_fields against "
-            "base_cv_content. Classify each gap as 'missing' (absent from the CV entirely), "
+            "base_cv_content and work_rag_evidence. Classify each gap as 'missing' (absent from the CV entirely), "
             "'understated' (present but not among the first two bullets of the most relevant "
             "role section), or 'mismatch' (present but framed for a different industry or "
-            "context than the JD). For 'missing' gaps set current_text_excerpt to null and "
-            "give the recommended addition text as the recommendation. For 'understated' or "
-            "'mismatch' gaps, current_text_excerpt must be copied verbatim from "
-            "base_cv_content, with recommendation as a specific replacement or reordering "
-            "instruction. Do NOT fabricate experience, credentials, or achievements — only "
-            "suggest reframing, reordering, or expanding on content already present in "
-            "base_cv_content or the Profile_Store."
+            "context than the JD). For 'missing' gaps, check if work_rag_evidence provides an "
+            "authentic bridge from past stints (e.g. Workato, VISEO, NCS) and recommend its inclusion. "
+            "Do NOT fabricate experience, credentials, or achievements — only "
+            "suggest reframing, reordering, or expanding on content present in "
+            "base_cv_content, work_rag_evidence, or the Profile_Store."
         ),
         "output_path": str(_resolve_company_folder(company, role_title, tracker) / "gap_analysis.md"),
         "call_next": "save_gap_analysis(company, role_title, gaps)",
+    }
+
+
+@mcp.tool()
+def enrich_gaps_from_work_rag(
+    company: str,
+    role_title: str,
+    custom_queries: Optional[list] = None,
+    limit_per_query: int = 2,
+) -> dict:
+    """Explicitly search Work-RAG archive for evidence addressing gaps in a JD (Gate 10).
+
+    Args:
+        company: Target employer name
+        role_title: Role title identifying the application
+        custom_queries: Optional list of specific query strings to search
+        limit_per_query: Maximum chunks per query (default: 2)
+
+    Returns: Discovered evidence items with source citations and stint mapping
+    """
+    from src.tools.work_rag_adapter import WorkRagQueryPlanner, WorkRagClient, CareerEvidenceEnricher
+
+    tracker = _load_tracker()
+    app = _find_application(tracker, company, role_title)
+    
+    queries = list(custom_queries or [])
+    if not queries and app:
+        jd_fields = _load_jd_fields_for_app(app) or {}
+        match_score = app.get("match_score") or {}
+        missing_skills = match_score.get("missing_skills", [])
+        
+        evidence_service = _get_or_create_evidence_service()
+        req_service = RequirementService(evidence_service)
+        requirements = req_service.extract_requirements(jd_fields)
+        evidence_matches = {req.requirement_id: req_service.match_requirement(req) for req in requirements.requirements}
+        gaps = req_service.identify_gaps(requirements, evidence_matches)
+        gap_dicts = [{"requirement": g.requirement_statement} for g in gaps]
+        
+        queries = WorkRagQueryPlanner.plan_queries(
+            company=company,
+            role_title=role_title,
+            gaps=gap_dicts,
+            missing_skills=missing_skills,
+            max_queries=4,
+        )
+
+    if not queries:
+        queries = [f"{role_title} {company} customer engagement"]
+
+    client = WorkRagClient()
+    raw_chunks = []
+    for q in queries:
+        chunks = client.search_hybrid(q, limit=limit_per_query)
+        raw_chunks.extend(chunks)
+
+    evidence_items = CareerEvidenceEnricher.synthesize_evidence_items(raw_chunks, max_items=6)
+    return {
+        "ok": True,
+        "company": company,
+        "role_title": role_title,
+        "queries_executed": queries,
+        "total_chunks_found": len(raw_chunks),
+        "evidence_items": evidence_items,
     }
 
 
@@ -3856,6 +3964,7 @@ def save_interview_notes(
         "path": str(notes_path),
         "appended": appended,
         "content_length": len(content),
+        "backend": "PostgreSQL" if STORAGE_BACKEND == "postgres" else STORAGE_BACKEND,
     }
 
 
@@ -4383,7 +4492,6 @@ def _find_opportunity_url(company: str, role_title: str | None, date_created: da
         return None
 
 
-@mcp.tool()
 def list_applied_opportunities(
     stage: str | None = None,
     company: str | None = None,
@@ -4692,7 +4800,6 @@ def list_job_discoveries(
         }
 
 
-@mcp.tool()
 def get_opportunity(opportunity_id: str) -> dict:
     """Get detailed information about a specific opportunity by UUID.
 
@@ -4706,7 +4813,6 @@ def get_opportunity(opportunity_id: str) -> dict:
     return get_application_status(application_id=opportunity_id)
 
 
-@mcp.tool()
 def update_opportunity_url(opportunity_id: str, linkedin_url: str) -> dict:
     """Update the LinkedIn URL for an opportunity.
 

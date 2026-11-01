@@ -107,6 +107,7 @@ def list_applications(
         "total": len(enriched_apps),
         "applications": enriched_apps,
         "opportunities": enriched_apps,
+        "backend": "PostgreSQL" if getattr(server, "STORAGE_BACKEND", "file") == "postgres" else getattr(server, "STORAGE_BACKEND", "file"),
     }
 
     if company and len({a["role_title"] for a in enriched_apps}) > 1:
@@ -232,6 +233,7 @@ def get_application_status(
         "outputs": app.get("outputs", {}) if app else {},
         "match_score": app.get("match_score") if app else None,
         "linkedin_url": app.get("metadata", {}).get("linkedin_url") or app.get("jd_source_url") if app else None,
+        "backend": "PostgreSQL" if getattr(server, "STORAGE_BACKEND", "file") == "postgres" else getattr(server, "STORAGE_BACKEND", "file"),
     }
     return result
 
@@ -243,18 +245,27 @@ def update_application(
     application_id: Optional[str] = None,
     linkedin_url: Optional[str] = None,
     interview_round: Optional[str] = None,
+    new_company: Optional[str] = None,
+    new_role_title: Optional[str] = None,
     tracker_loader: Optional[Callable[[], dict]] = None,
     tracker_saver: Optional[Callable[[dict], None]] = None,
 ) -> dict:
     """Update an application's pipeline stage, LinkedIn URL, or interview round.
 
     Args:
-        company: Target employer name.
+        company: Target employer name. Used only as a lookup key to locate the record.
         role_title: Role title (to disambiguate multiple roles at same employer).
+            Used only as a lookup key to locate the record.
         new_stage: New pipeline stage (e.g. 'interview_r1', 'applied', 'rejected').
         application_id: UUID of the application (alternative to company + role_title).
         linkedin_url: New or updated LinkedIn job posting URL.
         interview_round: Specific interview label/round.
+        new_company: Rename target for the stored employer name. Distinct from the
+            `company` lookup key: when provided, the located record's `company` is
+            rewritten to this value and persisted.
+        new_role_title: Rename target for the stored role title. Distinct from the
+            `role_title` lookup key: when provided, the located record's `role_title`
+            is rewritten to this value and persisted.
     """
     import job_applications_mcp_server as server
 
@@ -343,6 +354,35 @@ def update_application(
 
         updated_fields.append("stage")
 
+    # Rename write-back: applied only after `app` is resolved, so lookup
+    # semantics (including the application_id branch) are untouched. Both
+    # fields are rewritten before the single tracker_saver call so the change
+    # is atomic with respect to persistence.
+    rename_audit = []
+    if new_company is not None and new_company != app.get("company"):
+        old_company = app.get("company")
+        app["company"] = new_company
+        updated_fields.append("company")
+        rename_audit.append(("company", old_company, new_company))
+    if new_role_title is not None and new_role_title != app.get("role_title"):
+        old_role_title = app.get("role_title")
+        app["role_title"] = new_role_title
+        updated_fields.append("role_title")
+        rename_audit.append(("role_title", old_role_title, new_role_title))
+
+    if rename_audit:
+        if "audit" not in app or not isinstance(app.get("audit"), list):
+            app["audit"] = []
+        now = server._utc_now()
+        for field, old_value, new_value in rename_audit:
+            app["audit"].append({
+                "action": "rename",
+                "field": field,
+                "old": old_value,
+                "new": new_value,
+                "at": now,
+            })
+
     tracker_saver(tracker)
 
     result = {
@@ -355,6 +395,7 @@ def update_application(
         "updated_fields": updated_fields,
         "interview_round": app.get("interview_round"),
         "linkedin_url": app.get("metadata", {}).get("linkedin_url"),
+        "backend": "PostgreSQL" if getattr(server, "STORAGE_BACKEND", "file") == "postgres" else getattr(server, "STORAGE_BACKEND", "file"),
     }
     if new_stage:
         result["previous_stage"] = previous_stage
