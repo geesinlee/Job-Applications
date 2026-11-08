@@ -174,12 +174,29 @@ Call the `generate_clarifying_questions` tool with your proposed questions when 
             return f"Low coverage ({coverage_percentage:.0f}%). Need to gather more evidence or re-frame existing evidence to match JD requirements."
 
     
-    def generate_clarifying_questions(self, application_id: str, jd_content: str) -> dict:
+    def generate_clarifying_questions(
+        self,
+        application_id: str,
+        jd_content: str,
+        interview_context: Optional[list] = None,
+    ) -> dict:
         try:
             company = self._extract_company_name(jd_content)
             role = self._extract_role_title(jd_content)
-            
-            prompt = f"""Please generate 5 clarifying questions for the applicant applying to {company} as a {role}.
+
+            interview_section = ""
+            if interview_context:
+                themes = []
+                rounds = []
+                for ctx in interview_context:
+                    if isinstance(ctx, dict):
+                        rnd = ctx.get("round") or ctx.get("interviewRound") or "interview"
+                        rounds.append(rnd)
+                        themes.extend(ctx.get("keyThemes") or ctx.get("key_themes") or [])
+                if themes:
+                    interview_section = f"\nTake into account feedback/themes from prior interview rounds ({', '.join(rounds)}): {', '.join(set(themes))}."
+
+            prompt = f"""Please generate 5 clarifying questions for the applicant applying to {company} as a {role}.{interview_section}
 Based on the JD provided previously, what evidence do we need from the user to demonstrate they are a good fit?
 Present the questions to the user. When they reply, call `answer_clarifying_questions` with their answers."""
             return {
@@ -187,8 +204,9 @@ Present the questions to the user. When they reply, call `answer_clarifying_ques
                 "application_id": application_id,
                 "questions": [],
                 "question_count": 5,
+                "interview_context_count": len(interview_context or []),
                 "next_action": "answer_clarifying_questions",
-                "system_prompt": prompt
+                "system_prompt": prompt,
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -228,9 +246,10 @@ Present the questions to the user. When they reply, call `answer_clarifying_ques
         jd_content: str,
         evidence_items: list,
         work_rag_evidence: Optional[list] = None,
+        interview_context: Optional[list] = None,
     ) -> dict:
         try:
-            if not jd_content and not evidence_items and not work_rag_evidence:
+            if not jd_content and not evidence_items and not work_rag_evidence and not interview_context:
                 return {"ok": False, "error": "missing cv data"}
                 
             role = self._extract_role_title(jd_content) if jd_content else "Unknown Role"
@@ -284,6 +303,35 @@ Please merge and tailor the Base CV by incorporating the following NEW evidence:
 </new_evidence>
 """
 
+            interview_section = ""
+            if interview_context:
+                ctx_lines = []
+                for idx, item in enumerate(interview_context, 1):
+                    if isinstance(item, dict):
+                        rnd = item.get("round") or item.get("interviewRound") or f"Round {idx}"
+                        themes = ", ".join(item.get("keyThemes") or item.get("key_themes") or [])
+                        questions = "; ".join(item.get("questions") or [])
+                        notes = item.get("notes") or item.get("nextSteps") or item.get("next_steps") or ""
+                        parts = []
+                        if themes:
+                            parts.append(f"Themes: {themes}")
+                        if questions:
+                            parts.append(f"Questions Asked: {questions}")
+                        if notes:
+                            parts.append(f"Notes/Next Steps: {notes}")
+                        ctx_lines.append(f"{idx}. [{rnd.upper()}] " + " | ".join(parts))
+                    else:
+                        ctx_lines.append(f"{idx}. {item}")
+                interview_section = f"""
+Here is PREVIOUS INTERVIEW CONTEXT & FEEDBACK for this application:
+<interview_context>
+{chr(10).join(ctx_lines)}
+</interview_context>
+
+Instruction for Interview Context:
+Incorporate emphasis on these interview themes and questions to address interviewer expectations and reinforce critical discussion points.
+"""
+
             prompt = f"""Please write a tailored markdown CV draft for the {role} position.
 App ID: {application_id}
 
@@ -291,7 +339,7 @@ Here is the user's BASE CV:
 <base_cv>
 {base_cv_content}
 </base_cv>
-{new_evidence_section}{work_rag_section}
+{new_evidence_section}{work_rag_section}{interview_section}
 Ensure the final CV is a single, complete markdown document that seamlessly integrates the new evidence into the existing experience and formatting of the Base CV.
 When complete, call `revise_cv` or ask the user to confirm."""
             return {
@@ -300,6 +348,7 @@ When complete, call `revise_cv` or ask the user to confirm."""
                 "draft_version": 1,
                 "system_prompt": prompt,
                 "work_rag_evidence_count": len(work_rag_evidence or []),
+                "interview_context_count": len(interview_context or []),
             }
         except Exception as e:
             return {"ok": False, "error": str(e)}
