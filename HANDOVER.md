@@ -1,42 +1,26 @@
-# Handover State (2026-10-20)
+# Handover State (2026-11-08)
 
 ## Completed Tasks
-- **MCP Postgres Backend & NAS Path Alignment (`pi-4` & Repo)**:
-  - Fixed unawaited Prisma async client calls in [`PostgresEvidenceBackend`](file:///Users/gslee/Projects/Job-Applications/src/evidence_backend.py#L225-L542) via `_resolve()` helper; verified clean connection to `rv-cloud.local:5432/job_applications` without `RuntimeWarning`.
-  - Added explicit `"backend": "PostgreSQL"` reporting to [`ingest_jd`](file:///Users/gslee/Projects/Job-Applications/job_applications_mcp_server.py#L2394-L2408), [`save_interview_notes`](file:///Users/gslee/Projects/Job-Applications/job_applications_mcp_server.py#L3853-L3861), [`save_application_artefact`](file:///Users/gslee/Projects/Job-Applications/src/tools/artefacts.py#L40-L106), and lifecycle tools in [`src/tools/lifecycle.py`](file:///Users/gslee/Projects/Job-Applications/src/tools/lifecycle.py#L104-L362).
-  - Updated `/home/gs/Projects/Job-Applications/.env` on `pi-4`: aligned `JOB_APP_BASE_DIR` and `JOB_APP_ARTEFACTS_DIR` to `/mnt/job-app-data` and replaced hardcoded LAN IP with `rv-cloud.local`.
-  - Synced the full 4,504-byte Snowflake `JD.md` to `/mnt/job-app-data/Snowflake/enterprise-account-executive-acquisition/JD.md`, updated `jd_path` in PostgreSQL `CanonicalState` (`tracker`), and restarted `job-applications-mcp.service` on `pi-4`.
-
-## Incoming Fleet Tasks (Delegated to Agent)
-- **`DELEGATE-1792030874-6635E8`** (from AI-Assistant, HIGH priority): `RESOLVED` (2026-10-15).
-
-## MCP Tool Consolidation & Refactoring (2026-10-26)
-- **Consolidated 47 Tools to 31 Tools**:
-  - Eliminated token bloat and redundant queries (`list_applied_opportunities` -> `list_applications`, `get_opportunity` -> `get_application_status`, `update_opportunity_url` -> `update_application`, `review_daily_discoveries` -> `list_job_discoveries`).
-  - Unified 8 separate `save_*` persistence endpoints into a single typed tool: [`save_application_artefact`](file:///Users/gslee/Projects/Job-Applications/src/tools/artefacts.py).
-  - Consolidated master and reference CV getters into [`get_cv(document_type='base'|'reference')`](file:///Users/gslee/Projects/Job-Applications/src/tools/profile_tools.py).
-  - Retired Gate 9 direct LLM tool from FastMCP tool list in favor of Gate 10 Context-Prep standard.
-  - Decomposed domain handlers into modular subpackages in [`src/tools/`](file:///Users/gslee/Projects/Job-Applications/src/tools/).
-- **100% Backwards Compatibility**:
-  - Preserved all original Python callable functions in [`job_applications_mcp_server.py`](file:///Users/gslee/Projects/Job-Applications/job_applications_mcp_server.py) so consumer scripts (`orchestration_consumer.py`) and existing test suites pass with zero regressions.
-- **Verification**:
-  - 462 passing tests in pytest suite (`pytest test_mcp_server.py test_orchestration_consumer.py test_mcp_discovery_tools.py test_fabrication_guard_options.py test_job_digest.py test_tracker_daily.py tests/`).
-  - Added dedicated catalog test suite in [`tests/unit/test_consolidated_mcp_tools.py`](file:///Users/gslee/Projects/Job-Applications/tests/unit/test_consolidated_mcp_tools.py) (7/7 passed).
+- **Backlog Sprint & CI/CD Pipeline Execution (PRs #5, #6, #7, #8)**:
+  - **`JOBS-9` (PR #5)**: Modernized Python 3.14 datetime deprecations (`datetime.utcnow()` -> `datetime.now(timezone.utc).isoformat()`) across persistence, service, and acceptance tests; eliminated 164 deprecation warnings.
+  - **`JOBS-8` (PR #6)**: Wired `InterviewContext` into Gate 10 workflow (`src/workflow_tools.py` and `src/gate10_workflow_tools.py`), incorporating prior round questions, key themes, and next steps into clarifying questions and CV draft prompts.
+  - **`JOBS-10` (PR #7)**: Reinforced NAS persistent artefact hygiene & candidate PII isolation: added `*.pdf`, `*.docx`, `interview-*/`, and `applications/` to `.gitignore`; enforced path traversal confinement in `src/tools/artefacts.py` and `job_applications_mcp_server.py`.
+  - **`JOBS-6` (PR #8)**: Phase 2 MCP Tool Catalog Shrink to exactly 24 canonical tools. Consolidated followups into `manage_application_followups` and intelligence context into `prepare_intelligence_context`. Maintained 100% Python callable backward compatibility for legacy functions.
 
 ## Plane Backlog Sync (`JOBS`)
 - **`JOBS-4`** (`Done`): `[Epic] Consolidate and Modularize Job-Applications FastMCP Tools (47 to 31)`
 - **`JOBS-5`** (`Todo`): `[Deployment] Deploy Consolidated FastMCP Tools to Production Pi-4`
-- **`JOBS-6`** (`Backlog`): `[Tooling] Phase 2 MCP Tool Catalog Shrink to ~22 Canonical Tools`
+- **`JOBS-6`** (`Done`): `[Tooling] Phase 2 MCP Tool Catalog Shrink to ~22 Canonical Tools` (Merged PR #8)
 - **`JOBS-7`** (`Backlog`): `[Feature] Gmail API OAuth Automated Pipeline for LinkedIn Job Alert Ingestion`
-- **`JOBS-8`** (`Backlog`): `[Feature] Wire Interview Context Capture into Gate 10 Workflow (Option C)`
-- **`JOBS-9`** (`Backlog`): `[Quality] Modernize Python 3.14 Datetime UTC Deprecations in Acceptance Tests`
-- **`JOBS-10`** (`Backlog`): `[Governance] NAS Persistent Artefact Directory Hygiene & Candidate PII Isolation`
+- **`JOBS-8`** (`Done`): `[Feature] Wire Interview Context Capture into Gate 10 Workflow (Option C)` (Merged PR #6)
+- **`JOBS-9`** (`Done`): `[Quality] Modernize Python 3.14 Datetime UTC Deprecations in Acceptance Tests` (Merged PR #5)
+- **`JOBS-10`** (`Done`): `[Governance] NAS Persistent Artefact Directory Hygiene & Candidate PII Isolation` (Merged PR #7)
 - **`JOBS-11`** (`Done`): `[Epic] Work-RAG Evidence Retrieval for CV Gap Enrichment & Customization`
 - **`JOBS-12`** (`Done`): `[Story] Automated Work-RAG Query Generation from Unmatched JD Requirements`
 - **`JOBS-13`** (`Done`): `[Story] Work-RAG Cross-Domain Evidence Retrieval Client & Adapter`
 - **`JOBS-14`** (`Done`): `[Story] Evidence Synthesis, Level A/B Verification & Fabrication Guard Enforcement`
 - **`JOBS-15`** (`Done`): `[Story] Gate 10 Context-Prep Integration (analyse_gaps & generate_cv_draft)`
-- **`JOBS-16`** (`Todo`): `[Bugfix] Add MCP rename capability for application company/title (Scitech -> Scientech Consulting)`
+- **`JOBS-16`** (`Done`): `[Bugfix] Add MCP rename capability for application company/title (Scitech -> Scientech Consulting)`
 
 ## Work-RAG CV Customization Delivery (2026-10-26)
 - **Work-RAG Adapter (`src/tools/work_rag_adapter.py`)**:
