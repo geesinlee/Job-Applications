@@ -6,7 +6,7 @@ These fixtures provide test data factories and pre-populated repos.
 
 import pytest
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -44,8 +44,8 @@ def evidence_factory():
             "source_reference": source_reference,
             "source_document_id": None,
             "source_date": "2026-05-15T00:00:00Z",
-            "first_captured_at": datetime.utcnow().isoformat() + "Z",
-            "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+            "first_captured_at": datetime.now(timezone.utc).isoformat(),
+            "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
             "application_origin": application_origin,
             "verification_status": verification_status,
             "confidence": confidence,
@@ -60,9 +60,9 @@ def evidence_factory():
             "metrics": metrics or {},
             "notes": "",
             "created_by": "test",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "last_modified_by": "test",
-            "last_modified_at": datetime.utcnow().isoformat() + "Z",
+            "last_modified_at": datetime.now(timezone.utc).isoformat(),
             **kwargs
         }
     return _create
@@ -111,7 +111,7 @@ def requirement_factory():
             "evidence_created_from_response": evidence_created_from_response,
             "coverage_score": coverage_score,
             "required_for_cv": True,
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             **kwargs
         }
     return _create
@@ -143,8 +143,8 @@ def application_factory(tmp_path):
             "role_title": role_title,
             "jd_path": str(jd_path),
             "stage": stage,
-            "date_created": datetime.utcnow().isoformat() + "Z",
-            "history": [{"stage": stage, "at": datetime.utcnow().isoformat() + "Z"}],
+            "date_created": datetime.now(timezone.utc).isoformat(),
+            "history": [{"stage": stage, "at": datetime.now(timezone.utc).isoformat()}],
             "followups": [],
             "jd_source_url": None,
             "requirements_extracted_at": None,
@@ -159,7 +159,7 @@ def application_factory(tmp_path):
             "cv_draft_count": 0,
             "cv_approved_at": None,
             "cv_final_id": None,
-            "discovered_at": datetime.utcnow().isoformat() + "Z",
+            "discovered_at": datetime.now(timezone.utc).isoformat(),
             "applied_at": None,
             "significant_decisions": [],
             **kwargs
@@ -205,14 +205,14 @@ def cv_record_factory():
             "major_changes": major_changes or [],
             "changed_sections": changed_sections or [],
             "significant_omissions": significant_omissions or [],
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "approved_at": approved_at,
             "finalized_at": finalized_at,
             "predecessor_id": predecessor_id,
             "successor_id": successor_id,
             "created_by": "app:claude",
             "last_modified_by": "app:claude",
-            "last_modified_at": datetime.utcnow().isoformat() + "Z",
+            "last_modified_at": datetime.now(timezone.utc).isoformat(),
             **kwargs
         }
     return _create

@@ -9,7 +9,7 @@ import pytest
 import json
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from evidence_persistence import (
     EvidenceRepository,
     CVVersionsRepository,
@@ -162,9 +162,9 @@ def test_evidence_repo_add_and_retrieve(evidence_repo):
         "related_to": [],
         "notes": "",
         "created_by": "test",
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "last_modified_by": "test",
-        "last_modified_at": datetime.utcnow().isoformat() + "Z",
+        "last_modified_at": datetime.now(timezone.utc).isoformat(),
     }
 
     # Add
@@ -200,9 +200,9 @@ def test_evidence_repo_list_all(evidence_repo):
             "related_to": [],
             "notes": "",
             "created_by": "test",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "last_modified_by": "test",
-            "last_modified_at": datetime.utcnow().isoformat() + "Z",
+            "last_modified_at": datetime.now(timezone.utc).isoformat(),
         }
         evidence_repo.add_evidence(evidence)
 
@@ -227,9 +227,9 @@ def test_evidence_repo_filter(evidence_repo):
         "superseded_by": [],
         "related_to": [],
         "created_by": "test",
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "last_modified_by": "test",
-        "last_modified_at": datetime.utcnow().isoformat() + "Z",
+        "last_modified_at": datetime.now(timezone.utc).isoformat(),
         "verification_status": "user_confirmed",
         "user_confirmed": True,
         "notes": "",
@@ -266,9 +266,9 @@ def test_evidence_repo_update(evidence_repo):
         "superseded_by": [],
         "related_to": [],
         "created_by": "test",
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "last_modified_by": "test",
-        "last_modified_at": datetime.utcnow().isoformat() + "Z",
+        "last_modified_at": datetime.now(timezone.utc).isoformat(),
         "notes": "",
     }
     evidence_repo.add_evidence(evidence)
@@ -318,14 +318,14 @@ def test_cv_versions_repo_add_and_list(cv_versions_repo):
             "major_changes": [],
             "changed_sections": [],
             "significant_omissions": [],
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "approved_at": None,
             "finalized_at": None,
             "predecessor_id": None,
             "successor_id": None,
             "created_by": "test",
             "last_modified_by": "test",
-            "last_modified_at": datetime.utcnow().isoformat() + "Z",
+            "last_modified_at": datetime.now(timezone.utc).isoformat(),
         }
         cv_versions_repo.add_cv_record(cv_record)
 
