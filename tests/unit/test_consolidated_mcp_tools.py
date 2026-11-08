@@ -9,7 +9,7 @@ import job_applications_mcp_server as server
 
 
 def test_consolidated_mcp_tool_catalog():
-    """Verify exactly 31 consolidated MCP tools are registered."""
+    """Verify exactly 24 consolidated MCP tools are registered in Phase 2."""
     with open("job_applications_mcp_server.py") as f:
         lines = f.readlines()
 
@@ -22,9 +22,11 @@ def test_consolidated_mcp_tool_catalog():
                     tools.append(name)
                     break
 
-    assert len(tools) == 32, f"Expected 32 consolidated MCP tools, found {len(tools)}: {tools}"
+    assert len(tools) == 24, f"Expected 24 consolidated MCP tools, found {len(tools)}: {tools}"
     # Verify key unified tools are in the catalog
     assert "save_application_artefact" in tools
+    assert "prepare_intelligence_context" in tools
+    assert "manage_application_followups" in tools
     assert "list_applications" in tools
     assert "get_application_status" in tools
     assert "update_application" in tools
@@ -33,15 +35,16 @@ def test_consolidated_mcp_tool_catalog():
     assert "enrich_gaps_from_work_rag" in tools
 
     # Verify redundant tools are NOT exposed via @mcp.tool()
-    assert "list_applied_opportunities" not in tools
-    assert "get_opportunity" not in tools
-    assert "update_opportunity_url" not in tools
-    assert "review_daily_discoveries" not in tools
-    assert "get_base_cv" not in tools
-    assert "get_reference_cv" not in tools
-    assert "save_research" not in tools
-    assert "save_cover_letter" not in tools
-    assert "generate_cv_from_jd_with_evidence" not in tools
+    assert "company_research" not in tools
+    assert "map_territory" not in tools
+    assert "generate_cover_letter" not in tools
+    assert "generate_pitch" not in tools
+    assert "analyse_gaps" not in tools
+    assert "generate_learning_program" not in tools
+    assert "get_due_followups" not in tools
+    assert "mark_followup_complete" not in tools
+    assert "mark_submitted" not in tools
+    assert "ingest_from_discovery" not in tools
 
 
 def test_save_application_artefact_research(tmp_path, monkeypatch):
@@ -150,3 +153,82 @@ def test_list_applications_enriched(tmp_path, monkeypatch):
     all_res = server.list_applications(include_closed=True)
     assert all_res["count"] == 2
     assert "opportunities" in all_res
+
+
+def test_manage_application_followups_list_and_complete(tmp_path, monkeypatch):
+    """Verify manage_application_followups handles list and complete actions."""
+    tracker_file = tmp_path / "tracker.json"
+    tracker_file.write_text(json.dumps({"schema_version": "1.0", "applications": [
+        {
+            "id": "uuid-1",
+            "company": "Acme",
+            "role_title": "Lead",
+            "stage": "applied",
+            "followups": [
+                {
+                    "id": "f-1",
+                    "action_type": "check_status",
+                    "due_date": "2026-01-01",
+                    "status": "pending",
+                }
+            ],
+        }
+    ]}))
+    monkeypatch.setattr(server, "TRACKER_PATH", tracker_file)
+
+    # 1. Action: list
+    list_res = server.manage_application_followups(action="list")
+    assert list_res["count"] == 1
+    assert list_res["due_followups"][0]["followup_id"] == "f-1"
+
+    # 2. Action: complete
+    comp_res = server.manage_application_followups(
+        action="complete",
+        application_id="uuid-1",
+        followup_id="f-1",
+    )
+    assert comp_res.get("ok") is True
+
+    # After completion, list should return 0
+    empty_res = server.manage_application_followups(action="list")
+    assert empty_res["count"] == 0
+
+
+def test_prepare_intelligence_context_routing(tmp_path, monkeypatch):
+    """Verify prepare_intelligence_context routes to correct generators."""
+    monkeypatch.setattr(server, "ARTEFACTS_DIR", tmp_path)
+    (tmp_path / "Acme").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Acme" / "research.md").write_text("# Existing Research")
+    tracker_file = tmp_path / "tracker.json"
+    tracker_file.write_text(json.dumps({"schema_version": "1.0", "applications": []}))
+    monkeypatch.setattr(server, "TRACKER_PATH", tracker_file)
+
+    # Routing to research
+    res = server.prepare_intelligence_context(company="Acme", context_type="research")
+    assert "existing_content" in res or "template" in res
+
+    # Unsupported context_type
+    bad_res = server.prepare_intelligence_context(company="Acme", context_type="nonexistent")
+    assert bad_res["ok"] is False
+    assert "Unsupported context_type" in bad_res["error"]
+
+
+def test_legacy_functions_remain_callable(tmp_path, monkeypatch):
+    """Verify legacy functions remain callable in Python runtime."""
+    monkeypatch.setattr(server, "ARTEFACTS_DIR", tmp_path)
+    (tmp_path / "Acme").mkdir(parents=True, exist_ok=True)
+    tracker_file = tmp_path / "tracker.json"
+    tracker_file.write_text(json.dumps({"schema_version": "1.0", "applications": []}))
+    monkeypatch.setattr(server, "TRACKER_PATH", tracker_file)
+
+    assert callable(server.company_research)
+    assert callable(server.map_territory)
+    assert callable(server.generate_cover_letter)
+    assert callable(server.generate_pitch)
+    assert callable(server.analyse_gaps)
+    assert callable(server.generate_learning_program)
+    assert callable(server.get_due_followups)
+    assert callable(server.mark_followup_complete)
+    assert callable(server.mark_submitted)
+    assert callable(server.ingest_from_discovery)
+
