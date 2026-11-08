@@ -428,6 +428,28 @@ async def generate_cv_draft(application_id: str) -> dict:
             if jd_file.exists():
                 jd_text = jd_file.read_text(encoding="utf-8")
 
+        # Get interview contexts for this application
+        interview_contexts = []
+        try:
+            interview_contexts = await db.interviewcontext.find_many(
+                where={"applicationId": application_id},
+                order={"interviewRound": "asc"},
+            )
+        except Exception:
+            pass
+
+        interview_summary = ""
+        if interview_contexts:
+            ctx_items = []
+            for c in interview_contexts:
+                ctx_items.append({
+                    "round": c.interviewRound,
+                    "themes": c.keyThemes,
+                    "questions": c.questions,
+                    "next_steps": c.nextSteps,
+                })
+            interview_summary = f"\n\nPrior Interview Context & Feedback:\n{json.dumps(ctx_items, indent=2)}"
+
         # Generate draft with Gemini
         prompt = f"""You are a professional CV writer. Create a tailored CV section for this job application.
 
@@ -441,7 +463,7 @@ Available evidence from candidate:
     'achievement': ev.achievement,
     'context': ev.context,
     'skills': ev.skills_demonstrated,
-}} for ev in all_evidence[:5]], indent=2)}
+}} for ev in all_evidence[:5]], indent=2)}{interview_summary}
 
 Create a compelling CV section (2-3 paragraphs) that highlights relevant experience. Format as markdown.
 """

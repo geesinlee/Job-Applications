@@ -255,3 +255,54 @@ def test_get_workflow_state_returns_structured_error(backend):
     result = tools.get_workflow_state("app-010")
 
     assert result == {"ok": False, "error": "backend unavailable"}
+
+
+def test_generate_clarifying_questions_includes_interview_context(workflow_tools):
+    interview_ctx = [
+        {
+            "round": "r1",
+            "keyThemes": ["leadership", "system architecture"],
+            "questions": ["How do you handle team conflict?"],
+        }
+    ]
+    result = workflow_tools.generate_clarifying_questions(
+        application_id="app-011",
+        jd_content="Company: Acme Corp\nPosition: Engineering Lead",
+        interview_context=interview_ctx,
+    )
+
+    assert result["ok"] is True
+    assert result["interview_context_count"] == 1
+    assert "leadership" in result["system_prompt"]
+    assert "system architecture" in result["system_prompt"]
+
+
+def test_generate_cv_draft_includes_interview_context_section(tmp_path, monkeypatch):
+    base_cv = tmp_path / "base_cv.md"
+    base_cv.write_text("# Base CV\n\nExisting experience.", encoding="utf-8")
+    monkeypatch.setenv("JOB_APP_BASE_CV_PATH", str(base_cv))
+    tools = WorkflowTools()
+
+    interview_ctx = [
+        {
+            "round": "r1",
+            "keyThemes": ["distributed systems", "cross-functional stakeholder management"],
+            "questions": ["Can you give an example of handling cross-region outages?"],
+            "nextSteps": "Focus on resilience architecture for Round 2",
+        }
+    ]
+
+    result = tools.generate_cv_draft(
+        application_id="app-012",
+        jd_content="Position: Principal Architect",
+        evidence_items=["Designed regional data gateway."],
+        interview_context=interview_ctx,
+    )
+
+    assert result["ok"] is True
+    assert result["interview_context_count"] == 1
+    assert "<interview_context>" in result["system_prompt"]
+    assert "distributed systems" in result["system_prompt"]
+    assert "cross-region outages" in result["system_prompt"]
+    assert "resilience architecture" in result["system_prompt"]
+
