@@ -10,7 +10,7 @@ NO business logic here — only I/O and schema management.
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 import logging
@@ -158,7 +158,7 @@ class EvidenceRepository:
             if evidence["evidence_id"] == evidence_id:
                 # Update specified fields, preserve others
                 evidence.update(updates)
-                evidence["last_modified_at"] = datetime.utcnow().isoformat() + "Z"
+                evidence["last_modified_at"] = datetime.now(timezone.utc).isoformat()
                 self.save(repo)
                 logger.debug(f"Updated evidence: {evidence_id}")
                 return evidence
@@ -227,7 +227,7 @@ class CVVersionsRepository:
         for i, record in enumerate(repo["cv_records"]):
             if record["cv_record_id"] == cv_record_id:
                 record.update(updates)
-                record["last_modified_at"] = datetime.utcnow().isoformat() + "Z"
+                record["last_modified_at"] = datetime.now(timezone.utc).isoformat()
                 self.save(repo)
                 logger.debug(f"Updated CV record: {cv_record_id}")
                 return record
@@ -374,9 +374,9 @@ class BaselineEvidenceImporter:
                 "source_type": work_exp.get("_source", "baseline_cv"),
                 "source_reference": f"profile.json: {work_exp.get('company', 'Unknown')}",
                 "source_document_id": None,
-                "source_date": datetime.utcnow().isoformat() + "Z",
-                "first_captured_at": datetime.utcnow().isoformat() + "Z",
-                "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+                "source_date": datetime.now(timezone.utc).isoformat(),
+                "first_captured_at": datetime.now(timezone.utc).isoformat(),
+                "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
                 "application_origin": None,
                 "verification_status": "user_confirmed",
                 "confidence": "LEVEL_B",  # From profile: somewhat strong
@@ -391,9 +391,9 @@ class BaselineEvidenceImporter:
                 "metrics": {},
                 "notes": "Imported from baseline profile",
                 "created_by": "baseline_import",
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "last_modified_by": "baseline_import",
-                "last_modified_at": datetime.utcnow().isoformat() + "Z",
+                "last_modified_at": datetime.now(timezone.utc).isoformat(),
             }
             self.evidence_repo.add_evidence(evidence)
             count += 1
@@ -407,9 +407,9 @@ class BaselineEvidenceImporter:
                 "source_type": education.get("_source", "baseline_cv"),
                 "source_reference": f"profile.json: {education.get('institution', 'Unknown')}",
                 "source_document_id": None,
-                "source_date": datetime.utcnow().isoformat() + "Z",
-                "first_captured_at": datetime.utcnow().isoformat() + "Z",
-                "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+                "source_date": datetime.now(timezone.utc).isoformat(),
+                "first_captured_at": datetime.now(timezone.utc).isoformat(),
+                "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
                 "application_origin": None,
                 "verification_status": "user_confirmed",
                 "confidence": "LEVEL_A",  # Education is strong evidence
@@ -424,9 +424,9 @@ class BaselineEvidenceImporter:
                 "metrics": {},
                 "notes": "Imported from baseline profile",
                 "created_by": "baseline_import",
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "last_modified_by": "baseline_import",
-                "last_modified_at": datetime.utcnow().isoformat() + "Z",
+                "last_modified_at": datetime.now(timezone.utc).isoformat(),
             }
             self.evidence_repo.add_evidence(evidence)
             count += 1
@@ -440,9 +440,9 @@ class BaselineEvidenceImporter:
                 "source_type": "baseline_cv",
                 "source_reference": "profile.json: skills list",
                 "source_document_id": None,
-                "source_date": datetime.utcnow().isoformat() + "Z",
-                "first_captured_at": datetime.utcnow().isoformat() + "Z",
-                "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+                "source_date": datetime.now(timezone.utc).isoformat(),
+                "first_captured_at": datetime.now(timezone.utc).isoformat(),
+                "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
                 "application_origin": None,
                 "verification_status": "user_confirmed",
                 "confidence": "LEVEL_C",  # General skill, not deep
@@ -457,9 +457,9 @@ class BaselineEvidenceImporter:
                 "metrics": {},
                 "notes": "Imported from baseline profile",
                 "created_by": "baseline_import",
-                "created_at": datetime.utcnow().isoformat() + "Z",
+                "created_at": datetime.now(timezone.utc).isoformat(),
                 "last_modified_by": "baseline_import",
-                "last_modified_at": datetime.utcnow().isoformat() + "Z",
+                "last_modified_at": datetime.now(timezone.utc).isoformat(),
             }
             self.evidence_repo.add_evidence(evidence)
             count += 1
@@ -536,7 +536,7 @@ def perform_initial_migration(
         "tracker_migrated_to": "v2.0",
         "evidence_items_created": evidence_count,
         "cv_versions_repo_initialized": True,
-        "timestamp": datetime.utcnow().isoformat() + "Z"
+        "timestamp": datetime.now(timezone.utc).isoformat()
     }
 
     logger.info(f"Migration complete: {result}")

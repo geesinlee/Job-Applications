@@ -16,7 +16,7 @@ import re
 import uuid
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 
@@ -104,9 +104,9 @@ class EvidenceService:
             "source_type": source_type,
             "source_reference": source_reference,
             "source_document_id": None,
-            "source_date": datetime.utcnow().isoformat() + "Z",
-            "first_captured_at": datetime.utcnow().isoformat() + "Z",
-            "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+            "source_date": datetime.now(timezone.utc).isoformat(),
+            "first_captured_at": datetime.now(timezone.utc).isoformat(),
+            "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
             "application_origin": application_origin,
             "verification_status": verification_status,
             "confidence": confidence,
@@ -121,9 +121,9 @@ class EvidenceService:
             "metrics": metrics or {},
             "notes": notes,
             "created_by": "service",
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat(),
             "last_modified_by": "service",
-            "last_modified_at": datetime.utcnow().isoformat() + "Z",
+            "last_modified_at": datetime.now(timezone.utc).isoformat(),
         }
 
         self.repo.add_evidence(evidence)
@@ -153,7 +153,7 @@ class EvidenceService:
         updates = {
             "verification_status": verification_status,
             "user_confirmed": user_confirmed,
-            "last_confirmed_at": datetime.utcnow().isoformat() + "Z",
+            "last_confirmed_at": datetime.now(timezone.utc).isoformat(),
         }
         if notes:
             updates["notes"] = notes

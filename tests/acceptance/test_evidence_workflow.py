@@ -9,7 +9,7 @@ Run with: pytest tests/acceptance/ -v --tb=short -m "evidence or requirement or 
 """
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -93,7 +93,7 @@ def test_user_supplied_evidence_created(evidence_factory, application_factory):
             "application_id": app_id,
             "company": "Example Company",
             "role_title": "Strategic Account Executive",
-            "date_supplied": datetime.utcnow().isoformat() + "Z"
+            "date_supplied": datetime.now(timezone.utc).isoformat()
         },
         confidence="LEVEL_B",
         user_confirmed=True,
@@ -378,7 +378,7 @@ def test_review_gate_enforced_no_direct_finalize(cv_record_factory):
     approved = cv_record_factory(
         cv_record_id=draft["cv_record_id"],
         status="approved",
-        approved_at=datetime.utcnow().isoformat() + "Z"
+        approved_at=datetime.now(timezone.utc).isoformat()
     )
 
     # Only approved can be finalized
@@ -457,7 +457,7 @@ def test_final_cv_version_recoverable(application_factory, cv_record_factory):
         status="final",
         content="# Final Submitted CV",
         predecessor_id=draft2["cv_record_id"],
-        finalized_at=datetime.utcnow().isoformat() + "Z"
+        finalized_at=datetime.now(timezone.utc).isoformat()
     )
     draft2["successor_id"] = final["cv_record_id"]
 
