@@ -2251,6 +2251,29 @@ def set_applied_date(
 
 
 @mcp.tool()
+def manage_application_followups(
+    action: str = "list",
+    application_id: str | None = None,
+    followup_id: str | None = None,
+) -> dict:
+    """Manage application follow-up actions (list due followups or mark one complete).
+
+    Args:
+        action: 'list' to get pending due/overdue followups, or 'complete' to mark complete.
+        application_id: Required when action='complete'.
+        followup_id: Required when action='complete'.
+    """
+    act = (action or "list").lower().strip()
+    if act == "list":
+        return get_due_followups()
+    elif act == "complete":
+        if not application_id or not followup_id:
+            return {"ok": False, "error": "application_id and followup_id required for complete action"}
+        return mark_followup_complete(application_id=application_id, followup_id=followup_id)
+    else:
+        return {"ok": False, "error": f"Unknown action: {action}. Supported: 'list', 'complete'"}
+
+
 def get_due_followups() -> dict:
     """List pending follow-up actions due today or earlier (UTC), sorted ascending.
 
@@ -2281,7 +2304,6 @@ def get_due_followups() -> dict:
     return {"count": len(due), "due_followups": due}
 
 
-@mcp.tool()
 def mark_followup_complete(application_id: str, followup_id: str) -> dict:
     """Mark a follow-up action as completed.
 
@@ -2765,7 +2787,6 @@ def save_match_score(
     }
 
 
-@mcp.tool()
 def analyse_gaps(company: str, role_title: str) -> dict:
     """Prepare context for comparing the Base_CV against a JD's requirements.
 
@@ -3018,7 +3039,6 @@ def save_gap_analysis(company: str, role_title: str, gaps: list) -> dict:
     }
 
 
-@mcp.tool()
 def generate_learning_program(company: str, role_title: str) -> dict:
     """Prepare context for generating a skill-gap Learning_Program.
 
@@ -3166,7 +3186,6 @@ def save_learning_program(company: str, role_title: str, program: list) -> dict:
     }
 
 
-@mcp.tool()
 def company_research(company: str, focus: str = "general") -> dict:
     """Get a structured research template for a target company, or view existing research.
 
@@ -3242,7 +3261,6 @@ def save_research(company: str, content: str, focus: str = "general", role_title
     }
 
 
-@mcp.tool()
 def map_territory(company: str, accounts: list[str]) -> dict:
     """Get a territory mapping template for specific accounts at a target company.
 
@@ -3326,7 +3344,6 @@ def save_territory_map(company: str, content: str, role_title: str | None = None
     }
 
 
-@mcp.tool()
 def generate_cover_letter(company: str, tone: str = "storyteller") -> dict:
     """Prepare context for generating a tailored cover letter.
 
@@ -3464,7 +3481,6 @@ def save_cover_letter(company: str, content: str, tone: str = "storyteller", rol
     }
 
 
-@mcp.tool()
 def generate_pitch(company: str, format: str = "narrative") -> dict:
     """Prepare context for generating an interview pitch and questions.
 
@@ -3553,6 +3569,71 @@ def save_pitch(company: str, content: str, format: str = "narrative", role_title
         "content_length": len(content),
         "saved": True,
     }
+
+
+@mcp.tool()
+def prepare_intelligence_context(
+    company: str,
+    role_title: str | None = None,
+    context_type: str = "all",
+    focus: str = "general",
+    accounts: list[str] | None = None,
+    tone: str = "storyteller",
+    pitch_format: str = "narrative",
+) -> dict:
+    """Prepare intelligence context for an application (research, territory map, cover letter, pitch, gaps, or all).
+
+    Args:
+        company: Target employer name.
+        role_title: Role title (used for gaps, learning program, etc.).
+        context_type: 'all' (default), 'research', 'territory', 'cover_letter', 'pitch', 'gaps', 'learning'.
+        focus: Focus area for company research (e.g. 'general', 'executive', 'technical').
+        accounts: List of account names when context_type is 'territory' or 'all'.
+        tone: Tone for cover letter ('storyteller', 'conversational', 'formal').
+        pitch_format: Pitch format ('narrative', 'star', 'brief').
+    """
+    ctype = (context_type or "all").lower().strip()
+    if ctype in ("research", "company_research"):
+        return company_research(company=company, focus=focus)
+    elif ctype in ("territory", "territory_map"):
+        return map_territory(company=company, accounts=accounts or [])
+    elif ctype in ("cover_letter", "coverletter"):
+        return generate_cover_letter(company=company, tone=tone)
+    elif ctype in ("pitch",):
+        return generate_pitch(company=company, format=pitch_format)
+    elif ctype in ("gaps", "gap_analysis"):
+        return analyse_gaps(company=company, role_title=role_title or "")
+    elif ctype in ("learning", "learning_program"):
+        return generate_learning_program(company=company, role_title=role_title or "")
+    elif ctype == "all":
+        results = {}
+        try:
+            results["research"] = company_research(company=company, focus=focus)
+        except Exception as e:
+            results["research"] = {"error": str(e)}
+        if accounts:
+            try:
+                results["territory"] = map_territory(company=company, accounts=accounts)
+            except Exception as e:
+                results["territory"] = {"error": str(e)}
+        if role_title:
+            try:
+                results["gaps"] = analyse_gaps(company=company, role_title=role_title)
+            except Exception as e:
+                results["gaps"] = {"error": str(e)}
+        return {
+            "ok": True,
+            "company": company,
+            "role_title": role_title,
+            "context_type": "all",
+            "intelligence": results,
+        }
+    else:
+        return {
+            "ok": False,
+            "error": f"Unsupported context_type: {context_type}",
+            "supported_types": ["all", "research", "territory", "cover_letter", "pitch", "gaps", "learning"],
+        }
 
 
 def tailor_cv(company: str) -> dict:
@@ -3954,7 +4035,6 @@ def save_interview_notes(
     }
 
 
-@mcp.tool()
 def mark_submitted(
     company: str,
     role_title: str | None = None,
@@ -4193,7 +4273,6 @@ def review_daily_discoveries(date: str = "") -> dict:
     }
 
 
-@mcp.tool()
 def ingest_from_discovery(company: str, date: str) -> dict:
     """Ingest a discovered job from the daily digest into the tracker.
 
