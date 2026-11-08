@@ -198,3 +198,42 @@ class TestDomainBoundaryGovernance:
         repo_root = Path(__file__).resolve().parent.parent.parent
         violations = check_repo_boundaries(repo_root)
         assert violations == [], f"Domain boundary infringements detected: {violations}"
+
+
+# ---------------------------------------------------------------------------
+# 7. NAS Artefact Hygiene & Candidate PII Isolation Tests
+# ---------------------------------------------------------------------------
+
+class TestNasArtefactAndPiiHygieneGovernance:
+    """Verify generated artefacts, candidate PII, and interview notes remain isolated."""
+
+    def test_git_does_not_track_binary_artefacts_or_pii(self):
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        res = subprocess.run(
+            ["git", "ls-files", "*.pdf", "*.docx"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+        )
+        assert res.stdout.strip() == "", f"Candidate CV/PDF/DOCX artefacts tracked in git: {res.stdout}"
+
+    def test_gitignore_contains_pii_isolation_rules(self):
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        gitignore_text = (repo_root / ".gitignore").read_text(encoding="utf-8")
+        assert "*.pdf" in gitignore_text
+        assert "*.docx" in gitignore_text
+        assert "interview-*/" in gitignore_text
+        assert "applications/" in gitignore_text
+
+    def test_save_application_artefact_rejects_path_traversal(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server, "ARTEFACTS_DIR", tmp_path / "artifacts")
+        (tmp_path / "artifacts").mkdir()
+        from src.tools.artefacts import save_application_artefact
+
+        with pytest.raises(ValueError, match="Path traversal"):
+            save_application_artefact(
+                company="../../malicious_escape",
+                document_type="research",
+                content="malicious payload",
+            )
+

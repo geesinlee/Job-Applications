@@ -3181,9 +3181,7 @@ def company_research(company: str, focus: str = "general") -> dict:
         focus: Area to emphasize in research (e.g., "AI strategy", "public sector",
                "competitors"). Default: "general".
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     research_file = company_dir / "research.md"
     existing_research = _read_file(research_file)
@@ -3222,9 +3220,7 @@ def save_research(company: str, content: str, focus: str = "general", role_title
         content: The research content in Markdown format.
         focus: Research focus area. Default: "general".
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     research_file = company_dir / "research.md"
     header = f"# {company} — Company Research\n\n> Generated: {datetime.now().strftime('%Y-%m-%d')} | Focus: {focus}\n\n"
@@ -3260,9 +3256,7 @@ def map_territory(company: str, accounts: list[str]) -> dict:
                   (e.g., ["Organization Alpha", "Organization Beta"]). These are the organizations
                   where you want to find your contacts.
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     territory_file = company_dir / "territory_map.md"
     existing = _read_file(territory_file)
@@ -3310,9 +3304,7 @@ def save_territory_map(company: str, content: str, role_title: str | None = None
         company: Target employer name (e.g., "Example Company").
         content: The territory map content in Markdown format.
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     territory_file = company_dir / "territory_map.md"
     header = f"# {company} — Territory & Contact Map\n\n> Generated: {datetime.now().strftime('%Y-%m-%d')}\n\n"
@@ -3354,9 +3346,7 @@ def generate_cover_letter(company: str, tone: str = "storyteller") -> dict:
             "valid_tones": sorted(COVER_LETTER_TONES),
         }
 
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     # Read source files
     jd_content = _read_file(company_dir / "JD.md")
@@ -3485,9 +3475,7 @@ def generate_pitch(company: str, format: str = "narrative") -> dict:
         company: Target employer name (e.g., "Example Company").
         format: Output format: "narrative", "bullet_points", or "star_stories" (default: "narrative").
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     # Read source files
     jd_content = _read_file(company_dir / "JD.md")
@@ -3576,9 +3564,7 @@ def tailor_cv(company: str) -> dict:
     Args:
         company: Target employer name (e.g., "Example Company").
     """
-    company_dir = ARTEFACTS_DIR / company
-    if not company_dir.exists():
-        return {"error": f"Company folder '{company}' not found. Call create_application first."}
+    company_dir = _company_dir(company)
 
     # Read source files
     jd_content = _read_file(company_dir / "JD.md")
