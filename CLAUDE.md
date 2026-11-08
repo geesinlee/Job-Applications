@@ -62,6 +62,31 @@ You MUST follow these strict security rules at all times across all projects:
 - Never hardcode intranet/LAN IP addresses (`192.168.10.*`).
 - Use Tailscale MagicDNS (`*.ts.net`) or canonical service endpoints (`rv-cloud.local`).
 
+## 4. Exclusive Infrastructure & Network Authority (Infra-Agent Sole Ownership)
+- **ONLY Infra-Control-Plane (`Infra-Agent` in `fleet-rationalization`) is permitted to configure or alter networking, firewalls, Tailscale (ACLs/Serve/Funnel), SSH access, port allocations, routing, or device-level infrastructure across fleet nodes (`pi-3`, `pi-4`, `NAS`, `oppenheimer`, `Mac`).**
+- **Mandatory User Permission Gate**: Even `Infra-Agent` CANNOT execute network topology or infrastructure modifications without explicit, prior user approval.
+- **Strict Prohibition for Application / Domain Coding Agents**:
+  - Application agents (`Work-RAG`, `VisiRAG`, `AI-CRM`, `Contact-Mgmt`, `Job-Applications`, `GeBiz`, etc.) are **STRICTLY PROHIBITED** from:
+    1. Altering network routing, DNS, `/etc/hosts`, or firewall/iptables rules.
+    2. Modifying SSH daemon configurations, keys, or creating unauthorized tunnels (`ssh -R` / `-L` / `-D`).
+    3. Bypassing device sandboxing or network segmentation (especially on isolated worker nodes like `oppenheimer` tagged `worker-isolated`, or direct access to NAS internal databases).
+    4. Installing, modifying, or deleting systemd, launchd, or Termux background daemon services on any fleet device.
+    5. Exposing unauthenticated ports or binding internal services to `0.0.0.0`.
+
+## 5. Network & Infrastructure Change Delegation Protocol
+- When an application agent encounters a network connection issue, missing port, or requires infrastructure changes:
+  1. **DO NOT** attempt local workarounds, raw IP overrides, proxy tunnels, or node configuration changes.
+  2. **Delegate formally** to `fleet-rationalization` via cross-agent task:
+     ```bash
+     python3 /Users/gslee/Projects/fleet-rationalization/scripts/cross_agent_delegate.py \
+       --from-repo "<current_repo>" \
+       --to-repo "fleet-rationalization" \
+       --type "infra_request" \
+       --title "<request title>" \
+       --description "<detailed network or infrastructure requirement>"
+     ```
+  3. Mark state in `HANDOVER.md` as `BLOCKED_ON_DELEGATION: [TICKET_ID]` and block execution until Infra-Agent (with explicit user approval) provisions the change.
+
 # Fleet Device & Database Identity Matrix (Zero-Guessing Rule)
 
 Never guess SSH usernames, database ports, or role names. Query `python3 -m harness.cli facts --query "<target>"` or use this canonical matrix:
@@ -73,6 +98,8 @@ Never guess SSH usernames, database ports, or role names. Query `python3 -m harn
 | **pi-3** | `gs-pi-3.local` / `gs-pi-3.tail210e4f.ts.net` | **`gs`** (NEVER `gslee` or `root`) | Key-based SSH: `ssh gs@gs-pi-3.tail210e4f.ts.net` (no password prompt) |
 | **NAS** | `rv-cloud.local` / `rv-cloud.tail210e4f.ts.net` | **`admin` (SSH is NOLOGIN)** | Do NOT SSH to NAS. Use published ports (`:5432`, `:5433`, `:8080`, `:9092`) or UGOS GUI |
 | **Mac** | `gslee-mac` (`localhost`) | **`gslee`** | Local dev workstation only. Do NOT SSH to Mac |
+| **oppenheimer** | `oppenheimer` / `100.70.38.98` | **`u0_a347`** (Termux Android) | Key-based SSH on **port 8022**: `ssh -p 8022 u0_a347@100.70.38.98` (or `ssh oppenheimer`) |
+| **chromium** | `chromium` / `100.117.51.95` | **`gs`** (iSH Alpine Linux) | Key-based SSH on **port 8022**: `ssh -p 8022 gs@100.117.51.95` (or `ssh chromium`) |
 
 ## 2. Database Roles, Ports & JIT Secret Broker Resource IDs
 Never ask the user for database passwords. Lease passwords dynamically via `secret-broker` MCP (`request_secret_access` -> `get_secret`), which returns both the connection metadata and ephemeral password:
@@ -99,15 +126,28 @@ Every project in the fleet owns an exclusive capability domain:
 - **`GeBiz-Awards` / `GeBiz-X` / `Tenders`**: Singapore public sector tender tracking and awards ingestion.
 - **`Job-Applications`**: Job pipeline tracking, application analytics, resume indexing.
 - **`DevEx-Intel`**: Developer experience, engineering effectiveness, token telemetry & ROI analytics.
-- **`fleet-rationalization`**: Infrastructure health, JIT Secret Broker, Kafka event bus, A2A mesh discovery.
+- **`fleet-rationalization`**: Infrastructure health, JIT Secret Broker, Kafka event bus, A2A mesh discovery, Centralized Vision (`harness.vision`), and Centralized Notification Service (`harness.notify`).
 
 ## 2. Strict Anti-Infringement & Zero-Mock Rule
 - **NEVER** write code, mock services, or create database schemas for capabilities owned by another repository.
-- If your project needs vector similarity, contact resolution, or CRM updates:
-  - **PROHIBITED**: Reimplementing local vector distance math, building private scraping pipelines, or creating duplicate lookup tables.
-  - **MANDATORY**: Consume the canonical capability via the fleet MCP tool or A2A mesh client.
+- If your project needs vector similarity, contact resolution, CRM updates, vision OCR/classification, or notifications:
+  - **PROHIBITED**: Reimplementing local vector distance math, building private scraping pipelines, creating duplicate lookup tables, or calling `api.telegram.org` / `smtplib.SMTP` directly.
+  - **MANDATORY**: Consume the canonical capability via the fleet MCP tool, shared `harness` package (`harness.notify`, `harness.vision`), or A2A mesh client.
 
-## 3. Mandatory Service Discovery & Delegation Protocol
+## 3. Mandatory Centralized Notification Service (`harness.notify`)
+- **ALL applications MUST emit notifications, escalations, and digests exclusively via `harness.notify`**:
+  ```python
+  from harness.notify import emit_notification
+  emit_notification(title="...", body="...", severity="CRITICAL", repo="<repo>", service="<service>")
+  ```
+  or via CLI:
+  ```bash
+  python3 -m harness.cli notify --title "..." --body "..." --severity CRITICAL --repo "<repo>"
+  ```
+- **Zero-Message-Loss Guarantees**: Publishes to Kafka (`fleet.notifications.v1`) with `acks=all` + `enable.idempotence=true` and automatic local SQLite WAL spool fallback (`~/.fleet/spool/notifications.db`) when offline.
+- **PROHIBITED (`UNMANAGED_NOTIFICATION_BYPASS`)**: Direct calls to `api.telegram.org/bot`, `smtplib.SMTP`, or legacy `send_telegram_escalation` in application repos are strictly blocked by pre-commit and CI gates. Application repos MUST NOT store `TELEGRAM_BOT_TOKEN` or SMTP credentials in `.env`.
+
+## 4. Mandatory Service Discovery & Delegation Protocol
 When an agent cannot fulfill a requirement due to a missing dependency or endpoint:
 1. **Discover**: Query the Fleet Capability Catalog to identify the authoritative owner:
    ```bash

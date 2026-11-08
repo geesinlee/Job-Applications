@@ -222,6 +222,24 @@ class PostgresEvidenceBackend(EvidenceBackend):
         # Fallback to in-memory for tests if Postgres unavailable
         self._fallback = InMemoryEvidenceBackend()
 
+    @staticmethod
+    def _resolve(val):
+        """Await coroutine if Prisma client is async; return directly if sync/mock."""
+        import asyncio
+        import concurrent.futures
+        import inspect
+
+        if not inspect.isawaitable(val):
+            return val
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if loop and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                return executor.submit(lambda: asyncio.run(val)).result()
+        return asyncio.run(val)
+
     def _connect(self):
         """Establish Postgres connection using Prisma."""
         try:
@@ -229,7 +247,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
             from prisma import Prisma
 
             self._client = Prisma()
-            self._client.connect()
+            self._resolve(self._client.connect())
             # Log connection without exposing password
             db_host = self.db_url.split('@')[-1] if '@' in self.db_url else 'unknown'
             logger.info(f"Connected to Postgres: {db_host}")
@@ -247,7 +265,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
 
         try:
             # Create record in StructuredEvidence table
-            record = self._client.structuredevidence.create(
+            record = self._resolve(self._client.structuredevidence.create(
                 data={
                     "achievement": evidence.achievement,
                     "context": evidence.context,
@@ -260,7 +278,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
                     "source_section": evidence.source_section,
                     "source_cv_id": evidence.source_cv_id,
                 }
-            )
+            ))
             evidence.id = record.id
             evidence.created_at = record.createdAt
             evidence.updated_at = record.updatedAt
@@ -276,7 +294,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.get_evidence_by_id(evidence_id)
 
         try:
-            record = self._client.structuredevidence.find_unique(where={"id": evidence_id})
+            record = self._resolve(self._client.structuredevidence.find_unique(where={"id": evidence_id}))
             if not record:
                 return self._fallback.get_evidence_by_id(evidence_id)
 
@@ -309,10 +327,10 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.get_evidence_by_cv_id(cv_id)
 
         try:
-            records = self._client.structuredevidence.find_many(
+            records = self._resolve(self._client.structuredevidence.find_many(
                 where={"source_cv_id": cv_id},
                 order_by={"time_period_end": "desc"},  # Reverse chronological
-            )
+            ))
 
             evidence_list = []
             for record in records:
@@ -346,7 +364,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.delete_evidence(evidence_id)
 
         try:
-            result = self._client.structuredevidence.delete(where={"id": evidence_id})
+            result = self._resolve(self._client.structuredevidence.delete(where={"id": evidence_id}))
             logger.info(f"Deleted evidence: {evidence_id}")
             return result is not None
         except Exception as e:
@@ -359,11 +377,11 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.query_by_skills(skills)
 
         try:
-            records = self._client.structuredevidence.find_many(
+            records = self._resolve(self._client.structuredevidence.find_many(
                 where={
                     "skills_demonstrated": {"hasSome": skills}
                 }
-            )
+            ))
             return [
                 StructuredEvidence(
                     id=r.id,
@@ -392,9 +410,9 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.query_by_company(company_name)
 
         try:
-            records = self._client.structuredevidence.find_many(
+            records = self._resolve(self._client.structuredevidence.find_many(
                 where={"company_name": company_name}
-            )
+            ))
             return [
                 StructuredEvidence(
                     id=r.id,
@@ -429,7 +447,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
             if end:
                 where_clause["time_period_start"] = {"lte": end}
 
-            records = self._client.structuredevidence.find_many(where=where_clause if where_clause else None)
+            records = self._resolve(self._client.structuredevidence.find_many(where=where_clause if where_clause else None))
             return [
                 StructuredEvidence(
                     id=r.id,
@@ -458,9 +476,9 @@ class PostgresEvidenceBackend(EvidenceBackend):
             return self._fallback.get_evidence_by_application(application_id)
 
         try:
-            records = self._client.structuredevidence.find_many(
+            records = self._resolve(self._client.structuredevidence.find_many(
                 where={"application_id": application_id}
-            )
+            ))
             return [
                 StructuredEvidence(
                     id=r.id,
@@ -500,7 +518,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
                 description_parts.append(f"A: {app_evidence.response}")
             description = " ".join(description_parts) if description_parts else ""
 
-            record = self._client.structuredevidence.create(
+            record = self._resolve(self._client.structuredevidence.create(
                 data={
                     "user_id": "workflow-agent",
                     "description": description,
@@ -508,7 +526,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
                     "application_id": app_evidence.application_id,
                     "tags": ["workflow", "user_input"],
                 }
-            )
+            ))
             return record.id
         except Exception as e:
             logger.error(f"Failed to save application evidence: {e}")
@@ -519,6 +537,6 @@ class PostgresEvidenceBackend(EvidenceBackend):
     def close(self):
         """Close Postgres connection."""
         if self._client:
-            self._client.disconnect()
+            self._resolve(self._client.disconnect())
             logger.info("Disconnected from Postgres")
         self._fallback.close()

@@ -75,3 +75,22 @@
 - `JOBS-16` moved `Todo` -> `In Progress` (code complete, 39/39 tests pass; shipping).
 - Req 2.6 satisfied: Plane JOBS updated before PR. `BLOCKED_ON_DELEGATION` cleared.
 - PR may now be opened. Move `JOBS-16` -> `Done` after merge.
+
+## rename-application-company-title Bugfix — Merged + Deployed to Production (2026-11-01)
+- **Merged to main**: commit `3e4093f` pushed to `origin/main` (`a53d978..3e4093f`). Scoped to rename fix only (lifecycle.py, MCP wrapper, HANDOVER.md, 5 test files); unrelated working-tree changes left unstaged. Pre-commit compliance gate passed (0 violations).
+- **Production deploy (pi-4)**: completed via ticket `DELEGATE-1793499638-D334D2` (RESOLVED). Git repo synced to `3e4093f`, `job-applications-mcp.service` restarted and verified active/reachable on :8086 with 32 tools exposed.
+- **Plane**: `JOBS-16` and `JOBS-5` moved to `Done`.
+- **Live data correction** (Scitech -> Scientech Consulting + confirmed title): ready for user execution via Claude Desktop against production MCP.
+
+## Work-RAG Token Security Patch (2026-11-01)
+- **Committed**: `5eb2b64` on `origin/main` — removed the hardcoded Work-RAG bearer token that was an os.getenv fallback in `src/tools/work_rag_adapter.py`; now fail-closed `os.getenv("WORK_RAG_TOKEN", "")`. Adapter tests 3/3 pass. Compliance gate 0 violations. (File was previously untracked, so the literal is not in committed main history for this file.)
+- **DEPLOY HOLD**: Do NOT deploy `5eb2b64` to pi-4 until `WORK_RAG_TOKEN` is provisioned — it is currently MISSING from pi-4 `.env`, so the live service was relying on the removed fallback. Deploying now would 401 Work-RAG calls.
+- **Delegated (infra/secret-owned)**: ticket `DELEGATE-1793524321-6F442A` — (1) rotate compromised token, (2) set rotated `WORK_RAG_TOKEN` in pi-4 + local `.env`, (3) then deploy. State: `BLOCKED_ON_DELEGATION: DELEGATE-1793524321-6F442A`.
+- **Verified earlier**: WRAG-12 Work-RAG endpoint reachable from pi-4 (`:8087/health` → 200). FCP-21 / FCP-23 have no consumer in this repo (out of domain; not testable here).
+
+## Live Data Correction + Duplicate Cleanup (2026-11-01)
+- **Root cause of duplicate**: Claude Desktop's MCP client cached the tool list from before the 10:27 pi-4 restart, so it couldn't see new_company/new_role_title and created a duplicate record instead of renaming. Deployed service DOES expose the params (live signature confirmed). Fix: reconnect/restart Claude Desktop MCP connection.
+- **Original record** dcdd5d19-e6fe-4dd6-a081-122b6b42b0cb corrected via deployed rename tool (by application_id): company 'Scitech' -> 'ScienTec Consulting'; role_title -> 'Product Manager, Pre-Sales & Adoption (SCTD Products) - Senior Consultant'. Preserved true date_created 2026-10-24T09:41:53Z, full history, followups, audit trail. Verified from Postgres.
+- **Duplicate record** f14ee3c8-... (created 2026-11-01) DELETED via server _load_tracker/_save_tracker path (no raw SQL). Records 29 -> 28. Pre-delete backup: pi-4 /tmp/tracker_backup_20261101T100557Z.json.
+- **JOBS-16**: moved to Done.
+- **Open (delegated, infra-owned)**: ticket DELEGATE-1793527879-69F710 — rename on-disk artefact folder /mnt/job-app-data/Scitech/... -> ScienTec Consulting/... and update jd_path/outputs paths. Non-urgent; old paths still resolve. Also still open: DELEGATE-1793524321-6F442A (Work-RAG token rotation + WORK_RAG_TOKEN provisioning before deploying security commit 5eb2b64).

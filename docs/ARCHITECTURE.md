@@ -49,42 +49,36 @@ graph TB
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| MCP Server | `job_applications_mcp_server.py` | 24 tools, startup validation, state I/O |
+| MCP Server | `job_applications_mcp_server.py`, `src/tools/` | 31 consolidated FastMCP tools, startup validation, state I/O |
 | Orchestration Consumer | `orchestration_consumer.py` | Dry-run-by-default Kafka consumer for interview follow-up proposals and producer of correlated owner outcomes |
 | Job Discovery Digest | `job_digest.py` | Scheduled LinkedIn job-alert ingestion, deterministic AI/enterprise-sales filtering, retry-safe digest delivery |
 | Health Probe | `app_health.py` | Standalone operational checks, durable health snapshot, state-change notifications, optional Kafka/webhook alerts |
 | Daily Tracker | `tracker_daily.py` | Overdue follow-ups, email digest, optional remote backup |
-| Tests | `test_mcp_server.py`, `test_tracker_daily.py`, `test_orchestration_consumer.py` | Owner behavior, isolated state, and fake Kafka input |
+| Tests | `test_mcp_server.py`, `test_tracker_daily.py`, `test_orchestration_consumer.py`, `tests/` | Owner behavior, isolated state, and fake Kafka input |
 | Systemd Units | `deploy/pi-4/*.service`, `*.timer` | Always-on MCP and orchestration services; legacy timers retained for recovery/local use |
 
-## MCP Tool Groups
+## MCP Tool Groups (Consolidated 31 Tools)
 
-### Application Lifecycle
-`ingest_jd`, `create_application`, `get_application_status`, `update_stage`, `list_applications`
+### 1. Gate 10 Conversational Evidence Workflow
+`start_job_application_workflow`, `generate_clarifying_questions`, `answer_clarifying_questions`, `generate_cv_draft`, `revise_cv`, `confirm_final_version`, `get_workflow_state`
 
-### Follow-up Management
+### 2. Application Lifecycle & Opportunity Tracking
+`create_application`, `ingest_jd`, `get_application_status` (UUID & folder lookup), `update_application` / `update_stage` (stage & URL updates), `list_applications` (enriched status, elapsed days, LinkedIn URL), `set_applied_date`
+
+### 3. Follow-up Management
 `get_due_followups`, `mark_followup_complete`
 
-### Candidate Profile
-`update_profile`, `refresh_profile_from_linkedin`, `get_profile_summary`
+### 4. Candidate Profile & Base CV
+`get_cv` (unifies master & reference CVs), `get_profile_summary`, `update_profile`, `refresh_profile_from_linkedin`
 
-### Intelligence (context-prep pattern)
-`score_match` → `save_match_score` → `analyse_gaps` → `save_gap_analysis` → `generate_learning_program` → `save_learning_program`
+### 5. Intelligence Context Preparation
+`score_match`, `analyse_gaps`, `generate_learning_program`, `company_research`, `map_territory`, `generate_cover_letter`, `generate_pitch`
 
-### Document Generation (context-prep pattern)
-`tailor_cv` → `save_tailored_cv`, `generate_cover_letter` → `save_cover_letter`, `generate_pitch` → `save_pitch`
+### 6. Unified Artefact Persistence & Export
+`save_application_artefact` (single endpoint consolidating research, cover letter, pitch, gap analysis, learning plan, interview notes, territory map, match score), `mark_submitted`, `export_document`
 
-### Research
-`company_research` → `save_research`, `map_territory` → `save_territory_map`
-
-### Interview Notes
-`save_interview_notes` (append-style, timestamped headings)
-
-### Submission Tracking
-`mark_submitted` (copies CV/cover letter to `submitted/` folder, records in tracker)
-
-### Export
-`export_document` (PDF via weasyprint, DOCX via python-docx)
+### 7. Discovery & Digests
+`list_job_discoveries` (supports multi-day lookback or specific date), `ingest_from_discovery`
 
 ## Data Model
 

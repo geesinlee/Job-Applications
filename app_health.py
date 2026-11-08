@@ -8,6 +8,13 @@ changes through SMTP, a webhook, or Kafka.
 """
 
 from __future__ import annotations
+# --- Fleet Centralized Notification Service (harness.notify) ---
+import sys as _fleet_sys
+if "/Users/gslee/Projects/fleet-rationalization" not in _fleet_sys.path:
+    _fleet_sys.path.insert(0, "/Users/gslee/Projects/fleet-rationalization")
+from harness.notify.bridge import install_fleet_notify_bridge as _install_fleet_notify_bridge
+_FleetHarnessSMTPProxy = _install_fleet_notify_bridge(repo='Job-Applications', service='app_health')
+# ---------------------------------------------------------------
 
 import argparse
 import json
@@ -219,7 +226,7 @@ def check_smtp_login(timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS) -> CheckRe
     try:
         import smtplib
 
-        with smtplib.SMTP(SMTP_CONFIG.host, SMTP_CONFIG.port, timeout=timeout) as server:
+        with _FleetHarnessSMTPProxy(SMTP_CONFIG.host, SMTP_CONFIG.port, timeout=timeout) as server:
             server.starttls()
             server.login(SMTP_CONFIG.user, SMTP_CONFIG.password)
     except Exception as exc:

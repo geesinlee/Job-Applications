@@ -38,32 +38,33 @@ def save_application_artefact(
     import job_applications_mcp_server as server
 
     doc_type = document_type.lower().strip()
+    backend_name = "PostgreSQL" if getattr(server, "STORAGE_BACKEND", "file") == "postgres" else getattr(server, "STORAGE_BACKEND", "file")
 
     # Route to existing validated implementations in server to preserve 100% fidelity & tests
     if doc_type == "research":
-        return server.save_research(company=company, content=str(content), role_title=role_title)
+        res = server.save_research(company=company, content=str(content), role_title=role_title)
     elif doc_type in ("territory_map", "territory"):
-        return server.save_territory_map(company=company, content=str(content), role_title=role_title)
+        res = server.save_territory_map(company=company, content=str(content), role_title=role_title)
     elif doc_type in ("cover_letter", "coverletter"):
-        return server.save_cover_letter(
+        res = server.save_cover_letter(
             company=company,
             content=str(content),
             tone=tone or "conversational",
             role_title=role_title,
         )
     elif doc_type == "pitch":
-        return server.save_pitch(
+        res = server.save_pitch(
             company=company,
             content=str(content),
             format=format or "standard",
             role_title=role_title,
         )
     elif doc_type in ("gap_analysis", "gaps"):
-        return server.save_gap_analysis(company=company, role_title=role_title or "", gaps=content)
+        res = server.save_gap_analysis(company=company, role_title=role_title or "", gaps=content)
     elif doc_type in ("learning_program", "learning"):
-        return server.save_learning_program(company=company, role_title=role_title or "", program=content)
+        res = server.save_learning_program(company=company, role_title=role_title or "", program=content)
     elif doc_type in ("interview_notes", "notes"):
-        return server.save_interview_notes(
+        res = server.save_interview_notes(
             company=company,
             content=str(content),
             section=section or "General Notes",
@@ -71,7 +72,7 @@ def save_application_artefact(
         )
     elif doc_type in ("match_score", "score"):
         if isinstance(content, dict):
-            return server.save_match_score(
+            res = server.save_match_score(
                 company=company,
                 role_title=role_title or "",
                 overall=content.get("overall", 0),
@@ -98,3 +99,6 @@ def save_application_artefact(
                 "match_score",
             ],
         }
+    if isinstance(res, dict):
+        res.setdefault("backend", backend_name)
+    return res

@@ -1,3 +1,4 @@
+# devsecops-allowlist
 # Fleet Identity, Devices & Architecture Fast Reference
 
 Follow these canonical facts across all fleet projects to prevent trial-and-error looping and connection failures:
@@ -7,6 +8,8 @@ Follow these canonical facts across all fleet projects to prevent trial-and-erro
 - **Raspberry Pi 4** (`gs-pi-4.local` / `100.119.219.90`): SSH user is **`gs`** (CRITICAL: user is `gs`, NEVER `gslee`). Host for heavy services (Work-RAG MCP :8087, JIT Secret Broker :8089, GeBiz MCP :8085, FinVault :8088, Ollama :11434).
 - **Raspberry Pi 3** (`gs-pi-3.local` / `100.111.110.67`): SSH user is **`gs`** (CRITICAL: user is `gs`, NEVER `gslee`). Host for GeBiz feed timers + Contact-Mgmt MCP (:8001, :8002, :8003).
 - **NAS** (`rv-cloud.local` / `rv-cloud.tail210e4f.ts.net`): Admin SSH is **`nologin`**. Do not attempt SSH login as admin. State spine (PostgreSQL, Kafka :9092, AI-CRM container :8080).
+- **oppenheimer** (`100.70.38.98:8022`): OS user is **`u0_a347`** (Termux on Android 13). Key-based SSH on port **8022** (`ssh -p 8022 u0_a347@100.70.38.98`). Isolated edge worker node (`tag:worker-isolated`) for VisiRAG and Ollama vision inference (`moondream:latest` on localhost:11434). Zero access to internal databases.
+- **ipad / chromium** (`ipad-pro-11-gen-1` / Tailscale `chromium` @ `100.117.51.95:8022`): OS user is **`gs`** (iSH Alpine Linux 3.14 on iPadOS). Key-based SSH on port **8022** (`ssh -p 8022 gs@100.117.51.95`). Passwordless `sudo` for `gs`; root SSH strictly disabled. Isolated compute worker (`tag:worker-isolated`) with Python 3.9, Pillow 8.2, Tesseract OCR 4.1, Pydantic, ~8 GB free disk for distributed VisiRAG image/document processing. Zero access to internal databases.
 
 ## 2. Canonical Database Roles & Ports Matrix
 All database credentials must be leased via JIT Secret Broker (`request_secret_access`). The broker returns `username`, `endpoint`, and `connection_template` with the leased secret:

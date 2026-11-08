@@ -1,12 +1,19 @@
 #!/bin/bash
 # Fleet Universal Agent Harness — DevSecOps Pre-Commit Gate
-# Enforces Zero Plaintext Secrets, LAN IP Masking, and Domain Boundary Rules
+# Enforces Zero Plaintext Secrets, LAN IP Masking, Centralized Notification (harness.notify), and Domain Boundaries
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 export PYTHONPATH="/Users/gslee/Projects/fleet-rationalization:$PYTHONPATH"
 
+PYTHON_EXEC="python3"
+if [ -x "$REPO_ROOT/.venv/bin/python3" ]; then
+    PYTHON_EXEC="$REPO_ROOT/.venv/bin/python3"
+elif [ -x "/opt/homebrew/bin/python3" ]; then
+    PYTHON_EXEC="/opt/homebrew/bin/python3"
+fi
+
 # Run fast preflight compliance check (0 cloud tokens)
-python3 -m harness.cli compliance --repo "$(basename "$REPO_ROOT")" --content "$(git diff --cached)"
+"$PYTHON_EXEC" -m harness.cli compliance --repo "$(basename "$REPO_ROOT")" --content "$(git diff --cached)"
 
 if [ $? -ne 0 ]; then
     echo "🚨 [DevSecOps Blocked] Security or compliance violations detected. Commit aborted."
