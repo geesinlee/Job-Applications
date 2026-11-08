@@ -37,6 +37,11 @@ def save_application_artefact(
     """
     import job_applications_mcp_server as server
 
+    # Enforce path traversal & NAS isolation guardrail
+    target_dir = (server.ARTEFACTS_DIR / company).resolve()
+    if not target_dir.is_relative_to(server.ARTEFACTS_DIR.resolve()):
+        raise ValueError(f"Path traversal detected: {company}")
+
     doc_type = document_type.lower().strip()
     backend_name = "PostgreSQL" if getattr(server, "STORAGE_BACKEND", "file") == "postgres" else getattr(server, "STORAGE_BACKEND", "file")
 

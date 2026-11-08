@@ -55,6 +55,13 @@ docs/release-career-evidence/
 docs/MCP_QUICK_REFERENCE.md
 docs/MCP_TOOLS_DEPLOYMENT.md
 
+# Candidate PII, Generated CVs & Interview Artefacts
+*.pdf
+*.docx
+interview-*/
+applications/
+cv_tailored/
+
 # Cross-project working notes; not part of the Job-Applications release
 scratch/
 
