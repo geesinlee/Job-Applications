@@ -103,3 +103,51 @@ def test_llm_triage_config_ok_for_gemini(monkeypatch):
 
     assert result.ok is True
     assert result.status == "configured"
+
+
+class _Conn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_llm_triage_config_ok_for_reachable_ollama(monkeypatch):
+    """JOBS-18: pi-4 triages with Ollama, which src/llm_provider.py supports;
+    the probe used to report it as unsupported and fail every run."""
+    monkeypatch.setenv("JOB_DIGEST_TRIAGE_MODE", "llm")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("OLLAMA_BASE_URL", "http://ollama.example:11434")
+    monkeypatch.setenv("OLLAMA_MODEL", "qwen3:0.6b")
+    seen = []
+    monkeypatch.setattr(app_health.socket, "create_connection",
+                        lambda addr, timeout=None: seen.append(addr) or _Conn())
+
+    result = app_health.check_llm_triage_config()
+
+    assert result.ok is True and result.status == "configured"
+    assert result.metadata == {"provider": "ollama", "model": "qwen3:0.6b"}
+    assert seen == [("ollama.example", 11434)]
+
+
+def test_llm_triage_config_fails_for_unreachable_ollama(monkeypatch):
+    monkeypatch.setenv("JOB_DIGEST_TRIAGE_MODE", "llm")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+
+    def refuse(addr, timeout=None):
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(app_health.socket, "create_connection", refuse)
+
+    result = app_health.check_llm_triage_config()
+
+    assert result.ok is False and result.status == "ollama_unreachable"
+    assert "127.0.0.1:11434" in result.detail
+
+
+def test_llm_triage_config_still_rejects_mock(monkeypatch):
+    monkeypatch.setenv("JOB_DIGEST_TRIAGE_MODE", "llm")
+    monkeypatch.setenv("LLM_PROVIDER", "mock")
+    assert app_health.check_llm_triage_config().status == "unsupported_or_mock_provider"

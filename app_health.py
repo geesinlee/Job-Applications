@@ -315,6 +315,19 @@ def check_llm_triage_config() -> CheckResult:
         if not os.environ.get("ANTHROPIC_API_KEY"):
             return CheckResult("llm_triage", False, "missing_anthropic_api_key")
         return CheckResult("llm_triage", True, "configured", metadata={"provider": provider})
+    if provider == "ollama":
+        # Same defaults as src/llm_provider.OllamaProvider (JOBS-18).
+        base_url = (os.environ.get("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").rstrip("/")
+        model = os.environ.get("OLLAMA_MODEL") or os.environ.get("EVIDENCE_LLM_MODEL") or "llama3.2:3b"
+        parsed = urlparse(base_url)
+        host, port = parsed.hostname or "127.0.0.1", parsed.port or 11434
+        try:
+            with socket.create_connection((host, port), timeout=3):
+                pass
+        except OSError as exc:
+            return CheckResult("llm_triage", False, "ollama_unreachable", f"{host}:{port}: {exc}")
+        return CheckResult("llm_triage", True, "configured",
+                           metadata={"provider": provider, "model": model})
     return CheckResult("llm_triage", False, "unsupported_or_mock_provider", provider)
 
 
