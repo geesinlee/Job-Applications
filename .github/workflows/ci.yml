@@ -76,8 +76,14 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: geesinlee/infra-control-plane
-          token: ${{ secrets.FLEET_INFRA_PAT }}
+          ssh-key: ${{ secrets.FLEET_INFRA_DEPLOY_KEY }}  # read-only deploy key (JOBS-17)
           path: .fleet-harness/fleet-rationalization
+          persist-credentials: false
+
+      # Keep the harness outside the repo tree so repo-wide governance scans
+      # and compileall do not walk into it (JOBS-17).
+      - name: Move fleet harness out of the workspace
+        run: mv .fleet-harness/fleet-rationalization "$RUNNER_TEMP/fleet-rationalization" && rmdir .fleet-harness
 
       - name: Install Python Dependencies
         run: |
@@ -93,4 +99,4 @@ jobs:
         run: |
           pytest -v --tb=short
         env:
-          FLEET_HARNESS_PATH: ${{ github.workspace }}/.fleet-harness/fleet-rationalization
+          FLEET_HARNESS_PATH: ${{ runner.temp }}/fleet-rationalization
