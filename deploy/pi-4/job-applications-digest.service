@@ -1,13 +1,10 @@
 [Unit]
 Description=Job Applications Daily Job Digest Run
-After=network-online.target nfs-client.target
-Wants=network-online.target
+After=network.target nfs-client.target
 RequiresMountsFor=/mnt/job-app-data
 
 [Service]
-Type=oneshot
-TimeoutStartSec=600
 WorkingDirectory=%h/Projects/Job-Applications
-ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
+ExecStart=%h/Projects/Job-Applications/venv/bin/python \
           job_digest.py
-EnvironmentFile=-%h/.config/job-applications/env
+EnvironmentFile=%h/Projects/Job-Applications/.env
