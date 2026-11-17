@@ -1264,7 +1264,11 @@ class TestCompanyResearch:
         monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
         from job_applications_mcp_server import company_research
         result = company_research("NoCompany")
-        assert "error" in result
+        # JOBS-10: no "create_application first" error; a template is returned.
+        assert "error" not in result
+        assert result["company"] == "NoCompany"
+        assert result["existing_research"] is False
+        assert "NoCompany" in result["template"]
 
 
 class TestMapTerritory:
@@ -1294,7 +1298,11 @@ class TestMapTerritory:
         monkeypatch.setattr("job_applications_mcp_server.ARTEFACTS_DIR", tmp_path)
         from job_applications_mcp_server import map_territory
         result = map_territory("NoCompany", accounts=["Organization Alpha"])
-        assert "error" in result
+        # JOBS-10: no "create_application first" error; a template is returned.
+        assert "error" not in result
+        assert result["company"] == "NoCompany"
+        assert result["accounts"] == ["Organization Alpha"]
+        assert "NoCompany" in result["template"]
 
 
 class TestGenerateCoverLetter:

@@ -72,6 +72,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
 
+      - name: Check out fleet harness (harness.notify)
+        uses: actions/checkout@v4
+        with:
+          repository: geesinlee/infra-control-plane
+          token: ${{ secrets.FLEET_INFRA_PAT }}
+          path: .fleet-harness/fleet-rationalization
+
       - name: Install Python Dependencies
         run: |
           pip install --upgrade pip
@@ -85,3 +92,5 @@ jobs:
       - name: Run Full Test Suite (Functional & Security)
         run: |
           pytest -v --tb=short
+        env:
+          FLEET_HARNESS_PATH: ${{ github.workspace }}/.fleet-harness/fleet-rationalization

@@ -9,9 +9,16 @@ changes through SMTP, a webhook, or Kafka.
 
 from __future__ import annotations
 # --- Fleet Centralized Notification Service (harness.notify) ---
+# harness is not a pip package: load it from the fleet-rationalization checkout
+# (FLEET_HARNESS_PATH, default ~/Projects/fleet-rationalization). Appended, not
+# prepended, so its `scripts` package cannot shadow this repo's (JOBS-17).
+import os as _fleet_os
 import sys as _fleet_sys
-if "/Users/gslee/Projects/fleet-rationalization" not in _fleet_sys.path:
-    _fleet_sys.path.insert(0, "/Users/gslee/Projects/fleet-rationalization")
+_FLEET_HARNESS_PATH = _fleet_os.path.expanduser(
+    _fleet_os.environ.get("FLEET_HARNESS_PATH", "~/Projects/fleet-rationalization")
+)
+if _FLEET_HARNESS_PATH not in _fleet_sys.path:
+    _fleet_sys.path.append(_FLEET_HARNESS_PATH)
 from harness.notify.bridge import install_fleet_notify_bridge as _install_fleet_notify_bridge
 _FleetHarnessSMTPProxy = _install_fleet_notify_bridge(repo='Job-Applications', service='app_health')
 # ---------------------------------------------------------------
