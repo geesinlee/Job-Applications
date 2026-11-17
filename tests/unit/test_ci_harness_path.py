@@ -20,3 +20,9 @@ def test_ci_checks_out_harness_and_points_tests_at_it():
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "geesinlee/infra-control-plane" in ci
     assert "FLEET_HARNESS_PATH" in ci
+
+
+def test_ci_reads_harness_with_deploy_key_not_pat():
+    ci = (ROOT / ".github/workflows/ci.yml").read_text()
+    assert "ssh-key: ${{ secrets.FLEET_INFRA_DEPLOY_KEY }}" in ci
+    assert "FLEET_INFRA_PAT" not in ci
