@@ -69,6 +69,14 @@ class OrchestrationConfig:
 
     @classmethod
     def from_env(cls) -> "OrchestrationConfig":
+        # An enabled consumer with no broker used to fall back to localhost:9092,
+        # where librdkafka logs a connect failure every ~50 ms (DEVOPS-190).
+        if _env_flag("JOB_APP_ORCHESTRATION_ENABLED") and not os.environ.get(
+            "JOB_APP_KAFKA_BROKER", ""
+        ).strip():
+            raise ValueError(
+                "JOB_APP_KAFKA_BROKER must be set when JOB_APP_ORCHESTRATION_ENABLED is true"
+            )
         return cls(
             enabled=_env_flag("JOB_APP_ORCHESTRATION_ENABLED"),
             execute=_env_flag("JOB_APP_ORCHESTRATION_EXECUTE"),
