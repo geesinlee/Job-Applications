@@ -475,3 +475,33 @@ def test_result_delivery_failure_leaves_proposal_uncommitted():
 
     assert consumer.commits == []
     assert consumer.closed is True
+
+
+def test_enabled_without_broker_is_rejected(monkeypatch):
+    """DEVOPS-190: enabled with no broker used to fall back to localhost:9092,
+    where librdkafka logged a connect failure every ~50 ms (~1.9M lines/day)."""
+    monkeypatch.setenv("JOB_APP_ORCHESTRATION_ENABLED", "true")
+    monkeypatch.delenv("JOB_APP_KAFKA_BROKER", raising=False)
+    with pytest.raises(ValueError, match="JOB_APP_KAFKA_BROKER"):
+        OrchestrationConfig.from_env()
+    monkeypatch.setenv("JOB_APP_KAFKA_BROKER", "  ")
+    with pytest.raises(ValueError, match="JOB_APP_KAFKA_BROKER"):
+        OrchestrationConfig.from_env()
+
+
+def test_enabled_with_broker_uses_it(monkeypatch):
+    monkeypatch.setenv("JOB_APP_ORCHESTRATION_ENABLED", "true")
+    monkeypatch.setenv("JOB_APP_KAFKA_BROKER", "rv-cloud.local:9092")
+    assert OrchestrationConfig.from_env().broker == "rv-cloud.local:9092"
+
+
+def test_main_exits_2_without_broker_and_unit_does_not_restart_on_2(monkeypatch):
+    from pathlib import Path
+    import orchestration_consumer as oc
+    monkeypatch.setenv("JOB_APP_ORCHESTRATION_ENABLED", "true")
+    monkeypatch.delenv("JOB_APP_KAFKA_BROKER", raising=False)
+    assert oc.main() == 2
+    unit = (Path(__file__).parent / "deploy/pi-4/job-applications-orchestration.service").read_text()
+    assert "RestartPreventExitStatus=2" in unit
+    dropin = (Path(__file__).parent / "deploy/pi-4/job-applications-orchestration-broker.conf").read_text()
+    assert "Environment=JOB_APP_KAFKA_BROKER=rv-cloud.local:9092" in dropin
