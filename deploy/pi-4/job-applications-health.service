@@ -1,12 +1,15 @@
 [Unit]
 Description=Job Applications Operational Health Probe
-After=network-online.target
-Wants=network-online.target
+After=network.target nfs-client.target job-applications-mcp.service
+Wants=job-applications-mcp.service
+RequiresMountsFor=/mnt/job-app-data
 
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Projects/Job-Applications
-ExecStart=%h/Projects/Job-Applications/.venv/bin/python \
-          app_health.py --notify --check-smtp-login --check-kafka
+ExecStart=%h/Projects/Job-Applications/venv/bin/python app_health.py --notify --check-smtp-login --check-kafka
 Environment=JOB_APP_STORAGE_BACKEND=postgres
-EnvironmentFile=-%h/.config/job-applications/env
+Environment=JOB_APP_BASE_DIR=/mnt/job-app-data
+Environment=JOB_APP_ARTEFACTS_DIR=/mnt/job-app-data
+EnvironmentFile=%h/Projects/Job-Applications/.env
+Environment=JOB_APP_KAFKA_BROKER=rv-cloud.local:9092
