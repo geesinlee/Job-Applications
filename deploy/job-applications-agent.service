@@ -10,7 +10,12 @@ ExecStart=/home/gs/Projects/Job-Applications/venv/bin/python /home/gs/Projects/J
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
-Environment=KAFKA_BOOTSTRAP_SERVERS=rv-cloud.tail210e4f.ts.net:9092
+Environment=KAFKA_SECURITY_PROTOCOL=SASL_SSL
+Environment=KAFKA_SASL_MECHANISM=SCRAM-SHA-512
+Environment=KAFKA_SASL_USERNAME=job_applications
+Environment=KAFKA_SASL_PASSWORD_FILE=/home/gs/Projects/Temp/.kafka-job_applications-password
+Environment=KAFKA_SSL_CA_FILE=/home/gs/Projects/Temp/kafka-pki/ca.crt
+Environment=KAFKA_SASL_BOOTSTRAP_SERVERS=rv-cloud.tail210e4f.ts.net:9094
 
 StandardOutput=journal
 StandardError=journal

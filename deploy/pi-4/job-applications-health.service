@@ -12,4 +12,4 @@ Environment=JOB_APP_STORAGE_BACKEND=postgres
 Environment=JOB_APP_BASE_DIR=/mnt/job-app-data
 Environment=JOB_APP_ARTEFACTS_DIR=/mnt/job-app-data
 EnvironmentFile=%h/Projects/Job-Applications/.env
-Environment=JOB_APP_KAFKA_BROKER=rv-cloud.local:9092
+Environment=JOB_APP_KAFKA_BROKER=rv-cloud.tail210e4f.ts.net:9094

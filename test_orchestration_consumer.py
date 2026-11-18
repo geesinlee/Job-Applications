@@ -504,4 +504,4 @@ def test_main_exits_2_without_broker_and_unit_does_not_restart_on_2(monkeypatch)
     unit = (Path(__file__).parent / "deploy/pi-4/job-applications-orchestration.service").read_text()
     assert "RestartPreventExitStatus=2" in unit
     dropin = (Path(__file__).parent / "deploy/pi-4/job-applications-orchestration-broker.conf").read_text()
-    assert "Environment=JOB_APP_KAFKA_BROKER=rv-cloud.local:9092" in dropin
+    assert "Environment=JOB_APP_KAFKA_BROKER=rv-cloud.tail210e4f.ts.net:9094" in dropin
