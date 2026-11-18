@@ -30,6 +30,8 @@ except ImportError:
     pass
 
 
+from kafka_security import KafkaSecurityConfigError, kafka_security
+
 LOGGER = logging.getLogger("job_applications.orchestration")
 EXPECTED_RECOMMENDATION_TYPE = "job_application_followup"
 EXPECTED_ACTION_KIND = "job_application_interview_followup"
@@ -69,14 +71,15 @@ class OrchestrationConfig:
 
     @classmethod
     def from_env(cls) -> "OrchestrationConfig":
+        sec = kafka_security()
+        raw_broker = os.environ.get("JOB_APP_KAFKA_BROKER", "").strip()
         # An enabled consumer with no broker used to fall back to localhost:9092,
         # where librdkafka logs a connect failure every ~50 ms (DEVOPS-190).
-        if _env_flag("JOB_APP_ORCHESTRATION_ENABLED") and not os.environ.get(
-            "JOB_APP_KAFKA_BROKER", ""
-        ).strip():
+        if _env_flag("JOB_APP_ORCHESTRATION_ENABLED") and not sec.secure and not raw_broker:
             raise ValueError(
                 "JOB_APP_KAFKA_BROKER must be set when JOB_APP_ORCHESTRATION_ENABLED is true"
             )
+        broker = ",".join(sec.bootstrap_servers([raw_broker])) if sec.secure else (raw_broker or DEFAULT_BROKER)
         return cls(
             enabled=_env_flag("JOB_APP_ORCHESTRATION_ENABLED"),
             execute=_env_flag("JOB_APP_ORCHESTRATION_EXECUTE"),
@@ -88,7 +91,7 @@ class OrchestrationConfig:
                 DEFAULT_RESULT_TOPIC,
             ),
             group=os.environ.get("JOB_APP_ORCHESTRATION_GROUP", DEFAULT_GROUP),
-            broker=os.environ.get("JOB_APP_KAFKA_BROKER", DEFAULT_BROKER),
+            broker=broker,
         )
 
 
@@ -525,6 +528,7 @@ def process_action_proposed(
 
 def create_kafka_consumer(config: OrchestrationConfig):
     """Create the production Kafka consumer; imported lazily for testability."""
+    sec = kafka_security()
     try:
         from confluent_kafka import Consumer
     except ImportError as exc:
@@ -534,17 +538,19 @@ def create_kafka_consumer(config: OrchestrationConfig):
 
     return Consumer(
         {
-            "bootstrap.servers": config.broker,
+            "bootstrap.servers": ",".join(sec.bootstrap_servers([config.broker])),
             "group.id": config.group,
             "client.id": "job-applications-orchestration",
             "enable.auto.commit": False,
             "auto.offset.reset": "earliest",
+            **sec.confluent(),
         }
     )
 
 
 def create_kafka_producer(config: OrchestrationConfig):
     """Create the result-event producer with broker-side idempotence enabled."""
+    sec = kafka_security()
     try:
         from confluent_kafka import Producer
     except ImportError as exc:
@@ -554,12 +560,13 @@ def create_kafka_producer(config: OrchestrationConfig):
 
     return Producer(
         {
-            "bootstrap.servers": config.broker,
+            "bootstrap.servers": ",".join(sec.bootstrap_servers([config.broker])),
             "client.id": "job-applications-orchestration-results",
             "enable.idempotence": True,
             "acks": "all",
             "retries": 3,
             "retry.backoff.ms": 1000,
+            **sec.confluent(),
         }
     )
 
@@ -673,7 +680,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         config = OrchestrationConfig.from_env()
-    except ValueError as exc:
+    except (ValueError, KafkaSecurityConfigError) as exc:
         LOGGER.error("Invalid orchestration configuration: %s", exc)
         return 2
 

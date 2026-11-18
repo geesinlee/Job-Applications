@@ -33,6 +33,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from kafka_security import KafkaSecurityConfigError, kafka_security
 from urllib.parse import urlparse
 
 import requests
@@ -288,11 +290,17 @@ def check_digest_state(max_age_days: int = DEFAULT_DIGEST_MAX_AGE_DAYS) -> Check
 
 
 def check_kafka(timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS) -> CheckResult:
-    broker = os.environ.get("JOB_APP_KAFKA_BROKER", "")
-    if not broker:
+    try:
+        sec = kafka_security()
+    except KafkaSecurityConfigError as exc:
+        return CheckResult("kafka", False, "invalid_security_config", str(exc))
+    raw_broker = os.environ.get("JOB_APP_KAFKA_BROKER", "")
+    brokers = sec.bootstrap_servers([raw_broker])
+    if not brokers:
         return CheckResult("kafka", True, "not_configured")
+    broker = brokers[0]
     host, _, port_text = broker.partition(":")
-    port = int(port_text or "9092")
+    port = int(port_text or ("9094" if sec.secure else "9092"))
     try:
         with socket.create_connection((host, port), timeout=timeout):
             pass
@@ -425,9 +433,10 @@ def notify_webhook(report: dict[str, Any]) -> bool:
 def notify_kafka(report: dict[str, Any]) -> bool:
     if os.environ.get("JOB_APP_HEALTH_KAFKA_ENABLED", "false").lower() != "true":
         return False
-    broker = os.environ.get("JOB_APP_KAFKA_BROKER", "")
+    sec = kafka_security()
+    brokers = sec.bootstrap_servers([os.environ.get("JOB_APP_KAFKA_BROKER", "")])
     topic = os.environ.get("JOB_APP_HEALTH_KAFKA_TOPIC", "job_applications.health")
-    if not broker:
+    if not brokers:
         return False
     try:
         from confluent_kafka import Producer
@@ -441,12 +450,13 @@ def notify_kafka(report: dict[str, Any]) -> bool:
             delivered.append(str(err))
 
     producer = Producer({
-        "bootstrap.servers": broker,
+        "bootstrap.servers": ",".join(brokers),
         "client.id": "job-applications-health",
         "enable.idempotence": True,
         "acks": "all",
         "retries": 3,
         "retry.backoff.ms": 1000,
+        **sec.confluent(),
     })
     producer.produce(
         topic=topic,

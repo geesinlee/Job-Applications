@@ -36,4 +36,4 @@ def test_orchestration_dropins_match_pi4_names():
 
 
 def test_health_checks_kafka_against_fleet_broker():
-    assert "Environment=JOB_APP_KAFKA_BROKER=rv-cloud.local:9092" in _unit("job-applications-health")
+    assert "Environment=JOB_APP_KAFKA_BROKER=rv-cloud.tail210e4f.ts.net:9094" in _unit("job-applications-health")
