@@ -1,6 +1,13 @@
-# Handover State (2026-11-08)
+# Handover State (2026-11-18)
 
 ## Completed Tasks
+- **FCP-47 Phase C (`JOBS-19`, PR #14, Delegation `DELEGATE-1794843081-6F9B18`)**:
+  - Added fail-closed `kafka_security.py` (imports `harness.kafka_security` when available, else local identical contract).
+  - Migrated `orchestration_consumer.py` and `app_health.py` to `SASL_SSL` (`SCRAM-SHA-512`) on `rv-cloud.tail210e4f.ts.net:9094` with no PLAINTEXT fallback when `SASL_SSL` is configured.
+  - Added unit tests in `tests/unit/test_kafka_security.py` (43/43 Kafka/orchestration/health/unit tests passing) and updated `deploy/` unit files.
+  - **pi-4**: Copied `.kafka-job_applications-password` (0600) + `ca.crt` to `/home/gs/Projects/Temp/`, pulled `main`, deployed `kafka-sasl.conf` drop-ins for `job-applications-orchestration.service` and `job-applications-health.service`. Verified `sudo ss -tnp` shows only `:9094` (zero `:9092`/`:19092`).
+  - **pi-3 (`job-applications-agent.service`)**: Copied `.kafka-job_applications-password` (0600) + `ca.crt` to `/home/gs/Projects/Temp/` and deployed `kafka-sasl.conf` drop-in. **Blocked on `fleet-rationalization` sync on pi-3**: `job_applications_agent.py` delegates to `/home/gs/Projects/fleet-rationalization/scripts/repo_task_worker.py`, which on pi-3 is at `fa57acd` (pre-FCP-47) and still dials `:9092`. Reported back to `fleet-rationalization` via `cross_agent_delegate.py` with actual topics/groups (`orchestration.action_proposed`, `orchestration.action_completed`, `fleet.agent.tasks`; groups `job-applications-orchestration-v1`, `job-applications-agent-v1`).
+
 - **Backlog Sprint & CI/CD Pipeline Execution (PRs #5, #6, #7, #8)**:
   - **`JOBS-9` (PR #5)**: Modernized Python 3.14 datetime deprecations (`datetime.utcnow()` -> `datetime.now(timezone.utc).isoformat()`) across persistence, service, and acceptance tests; eliminated 164 deprecation warnings.
   - **`JOBS-8` (PR #6)**: Wired `InterviewContext` into Gate 10 workflow (`src/workflow_tools.py` and `src/gate10_workflow_tools.py`), incorporating prior round questions, key themes, and next steps into clarifying questions and CV draft prompts.
