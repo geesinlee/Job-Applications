@@ -29,7 +29,7 @@ flowchart LR
     subgraph External["External / fleet systems"]
         Gmail["Gmail API<br/>OAuth via gmail_auth.py"]
         Kafka[("Kafka<br/>orchestration.action_*")]
-        Notify["fleet-notify<br/>email, ntfy, osascript"]
+        Notify["fleet_sdk.notify<br/>Kafka → fleet worker (email)"]
         Gemini["Google GenAI / LangChain<br/>optional CV generation path"]
     end
 

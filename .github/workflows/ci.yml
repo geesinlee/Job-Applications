@@ -65,25 +65,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
 
-      - name: Configure SSH for private fleet deps
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.FLEET_NOTIFY_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
-
-      - name: Check out fleet harness (harness.notify)
-        uses: actions/checkout@v4
+      - name: Load read-only fleet-sdk deploy key
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          repository: geesinlee/infra-control-plane
-          ssh-key: ${{ secrets.FLEET_INFRA_DEPLOY_KEY }}  # read-only deploy key (JOBS-17)
-          path: .fleet-harness/fleet-rationalization
-          persist-credentials: false
+          ssh-private-key: ${{ secrets.FLEET_SDK_DEPLOY_KEY }}
 
-      # Keep the harness outside the repo tree so repo-wide governance scans
-      # and compileall do not walk into it (JOBS-17).
-      - name: Move fleet harness out of the workspace
-        run: mv .fleet-harness/fleet-rationalization "$RUNNER_TEMP/fleet-rationalization" && rmdir .fleet-harness
+      - name: Fetch private fleet-sdk over SSH
+        run: git config --global url."git@github.com:geesinlee/fleet-sdk".insteadOf "https://github.com/geesinlee/fleet-sdk"
 
       - name: Install Python Dependencies
         run: |
@@ -98,5 +86,3 @@ jobs:
       - name: Run Full Test Suite (Functional & Security)
         run: |
           pytest -v --tb=short
-        env:
-          FLEET_HARNESS_PATH: ${{ runner.temp }}/fleet-rationalization

@@ -32,12 +32,9 @@ mkdir -p data/base_cv
 Put the candidate-owned reference CV at the path configured by
 `JOB_APP_BASE_CV_PATH`. Do not commit it.
 
-The digest utilities use the fleet-local `fleet-notify` package. Install it
-separately if those commands are required:
-
-```bash
-.venv/bin/pip install -e /path/to/fleet-notify
-```
+Digests and health alerts send email through `fleet_sdk.notify` (installed from
+`requirements.txt`). The app holds no SMTP credentials; the fleet notification
+worker delivers the mail.
 
 ## Run
 

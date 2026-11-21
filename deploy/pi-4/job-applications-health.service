@@ -7,7 +7,7 @@ RequiresMountsFor=/mnt/job-app-data
 [Service]
 Type=oneshot
 WorkingDirectory=%h/Projects/Job-Applications
-ExecStart=%h/Projects/Job-Applications/venv/bin/python app_health.py --notify --check-smtp-login --check-kafka
+ExecStart=%h/Projects/Job-Applications/venv/bin/python app_health.py --notify --check-kafka
 Environment=JOB_APP_STORAGE_BACKEND=postgres
 Environment=JOB_APP_BASE_DIR=/mnt/job-app-data
 Environment=JOB_APP_ARTEFACTS_DIR=/mnt/job-app-data

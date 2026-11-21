@@ -85,5 +85,5 @@ not require Kafka to be available.
 .venv/bin/python -m pytest -q
 ```
 
-The optional digest tests additionally require the separately distributed
-`fleet-notify` package.
+The digest tests require `fleet-sdk` (from `requirements.txt`), which provides
+`fleet_sdk.notify`.

@@ -11,7 +11,7 @@ Pipeline:
   4. De-duplicate against tracker.json (URL exact + company+title fuzzy)
   5. Require both AI-company relevance and enterprise-sales role relevance
   6. Write daily Markdown digest to $JOB_APP_ARTEFACTS_DIR/digests/YYYY-MM-DD.md
-  7. Send summary email via SMTP (fleet-notify)
+  7. Send summary email via fleet_sdk.notify (fleet notification worker)
   8. Move processed LinkedIn emails to Trash via Gmail API
   9. Update last-run timestamp
 """
@@ -42,8 +42,7 @@ from gmail_auth import GmailAccountManager
 from email_parser import JobCard, parse_linkedin_email
 from email_parser import _extract_job_id
 
-from fleet_notify import send_email
-from fleet_notify.config import load_smtp_config
+from notify_email import send_email
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -63,10 +62,9 @@ REFERENCE_CV_PATH = Path(os.environ.get(
 
 GMAIL_ACCOUNTS_CONFIG = os.environ.get("GMAIL_ACCOUNTS_CONFIG", "")
 
-# SMTP config via fleet-notify — auto-loaded from SMTP_* env vars.
-# SMTP and Gmail API accounts are configured independently through environment
-# variables and the ignored gmail_accounts.json runtime file.
-_SMTP_CONFIG = load_smtp_config()
+# Outbound email goes through fleet_sdk.notify (no SMTP credentials here).
+# Gmail API read accounts are configured through environment variables and
+# the ignored gmail_accounts.json runtime file.
 
 DIGEST_DIR = ARTEFACTS_DIR / "digests"
 LAST_RUN_FILE = ARTEFACTS_DIR / ".job_digest_last_run"
@@ -941,13 +939,14 @@ def _format_digest_email(
 
 
 def _send_digest_email(subject: str, body: str) -> bool:
-    """Send the digest via SMTP (fleet-notify). Returns True on success."""
-    return send_email(subject, body, config=_SMTP_CONFIG)
+    """Publish the digest email to the fleet notification service."""
+    return send_email(subject, body, service="job_digest")
 
 
 def _send_alert_email(subject: str, body: str) -> bool:
-    """Send an alert email (e.g. auth failure) via SMTP. Returns True on success."""
-    return send_email(subject, body, config=_SMTP_CONFIG)
+    """Publish an alert email (e.g. auth failure) to the fleet notification service."""
+    return send_email(subject, body, service="job_digest", severity="HIGH",
+                      category="pipeline_failure")
 
 
 # ---------------------------------------------------------------------------
@@ -1267,7 +1266,7 @@ def _run_pipeline(args: argparse.Namespace, today: str) -> int:
     if not sent:
         _write_failure_state(
             "digest_delivery_failed",
-            "Digest was written but SMTP delivery failed; source emails were kept for retry",
+            "Digest was written but the notification publish failed; source emails were kept for retry",
             today,
         )
         _log("ERROR: Digest delivery failed; keeping emails and last-run marker unchanged for catch-up")
