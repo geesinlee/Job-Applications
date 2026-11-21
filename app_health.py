@@ -4,24 +4,10 @@
 The probe is intentionally standalone so systemd can run it even when the MCP
 process, digest job, or orchestration worker is unhealthy. It writes a durable
 JSON snapshot, exits non-zero on unhealthy state, and can notify on state
-changes through SMTP, a webhook, or Kafka.
+changes through fleet_sdk.notify (email), a webhook, or Kafka.
 """
 
 from __future__ import annotations
-# --- Fleet Centralized Notification Service (harness.notify) ---
-# harness is not a pip package: load it from the fleet-rationalization checkout
-# (FLEET_HARNESS_PATH, default ~/Projects/fleet-rationalization). Appended, not
-# prepended, so its `scripts` package cannot shadow this repo's (JOBS-17).
-import os as _fleet_os
-import sys as _fleet_sys
-_FLEET_HARNESS_PATH = _fleet_os.path.expanduser(
-    _fleet_os.environ.get("FLEET_HARNESS_PATH", "~/Projects/fleet-rationalization")
-)
-if _FLEET_HARNESS_PATH not in _fleet_sys.path:
-    _fleet_sys.path.append(_FLEET_HARNESS_PATH)
-from harness.notify.bridge import install_fleet_notify_bridge as _install_fleet_notify_bridge
-_FleetHarnessSMTPProxy = _install_fleet_notify_bridge(repo='Job-Applications', service='app_health')
-# ---------------------------------------------------------------
 
 import argparse
 import json
@@ -45,8 +31,7 @@ try:
 except ImportError:
     pass
 
-from fleet_notify import send_email
-from fleet_notify.config import load_smtp_config
+from notify_email import send_email
 from gmail_auth import GmailAccountManager
 
 
@@ -77,7 +62,6 @@ DEFAULT_DIGEST_MAX_AGE_DAYS = int(os.environ.get("JOB_APP_HEALTH_DIGEST_MAX_AGE_
 DEFAULT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("JOB_APP_HEALTH_HTTP_TIMEOUT_SECONDS", "8"))
 DEFAULT_SOCKET_TIMEOUT_SECONDS = float(os.environ.get("JOB_APP_HEALTH_SOCKET_TIMEOUT_SECONDS", "5"))
 
-SMTP_CONFIG = load_smtp_config()
 
 
 @dataclass
@@ -218,29 +202,17 @@ def check_mcp_http(timeout: float = DEFAULT_HTTP_TIMEOUT_SECONDS) -> CheckResult
     return CheckResult("mcp_http", True, "ok", metadata={"url": _redact_url(mcp_url)})
 
 
-def check_smtp_config() -> CheckResult:
-    if not SMTP_CONFIG.is_configured:
-        return CheckResult("smtp_config", False, "not_configured")
-    return CheckResult(
-        "smtp_config",
-        True,
-        "configured",
-        metadata={"host": SMTP_CONFIG.host, "port": SMTP_CONFIG.port, "user": SMTP_CONFIG.user},
-    )
+def check_notify_config() -> CheckResult:
+    """Email is published to fleet.notifications.v1; check that publish path.
 
-
-def check_smtp_login(timeout: float = DEFAULT_SOCKET_TIMEOUT_SECONDS) -> CheckResult:
-    if not SMTP_CONFIG.is_configured:
-        return CheckResult("smtp_login", False, "not_configured")
+    A broken Kafka security config makes every publish fall back to the local
+    spool, so mail would stall until the config is fixed.
+    """
     try:
-        import smtplib
-
-        with _FleetHarnessSMTPProxy(SMTP_CONFIG.host, SMTP_CONFIG.port, timeout=timeout) as server:
-            server.starttls()
-            server.login(SMTP_CONFIG.user, SMTP_CONFIG.password)
-    except Exception as exc:
-        return CheckResult("smtp_login", False, "login_failed", str(exc))
-    return CheckResult("smtp_login", True, "ok")
+        sec = kafka_security()
+    except KafkaSecurityConfigError as exc:
+        return CheckResult("notify_config", False, "kafka_security_invalid", str(exc))
+    return CheckResult("notify_config", True, "configured", metadata={"secure": sec.secure})
 
 
 def check_gmail_oauth() -> CheckResult:
@@ -345,13 +317,11 @@ def run_checks(args: argparse.Namespace) -> list[CheckResult]:
         check_artifact_paths(),
         check_postgres_socket(),
         check_mcp_http(),
-        check_smtp_config(),
+        check_notify_config(),
         check_gmail_oauth(),
         check_digest_state(args.digest_max_age_days),
         check_llm_triage_config(),
     ]
-    if args.check_smtp_login:
-        checks.append(check_smtp_login())
     if args.check_kafka:
         checks.append(check_kafka())
     return checks
@@ -413,9 +383,11 @@ def _record_notification_state(report: dict[str, Any]) -> None:
     })
 
 
-def notify_smtp(report: dict[str, Any]) -> bool:
+def notify_email(report: dict[str, Any]) -> bool:
     subject, body = _format_alert(report)
-    return send_email(subject, body, config=SMTP_CONFIG)
+    severity = "INFO" if report.get("ok") else "HIGH"
+    return send_email(subject, body, service="app_health", severity=severity,
+                      category="system_alert")
 
 
 def notify_webhook(report: dict[str, Any]) -> bool:
@@ -470,9 +442,9 @@ def notify_kafka(report: dict[str, Any]) -> bool:
 
 def notify(report: dict[str, Any], *, force: bool = False) -> dict[str, bool]:
     if not _should_notify(report, force=force):
-        return {"smtp": False, "webhook": False, "kafka": False, "suppressed_unchanged": True}
+        return {"email": False, "webhook": False, "kafka": False, "suppressed_unchanged": True}
     results = {
-        "smtp": notify_smtp(report),
+        "email": notify_email(report),
         "webhook": notify_webhook(report),
         "kafka": notify_kafka(report),
         "suppressed_unchanged": False,
@@ -484,7 +456,8 @@ def notify(report: dict[str, Any], *, force: bool = False) -> dict[str, bool]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Check Job Applications operational health")
     parser.add_argument("--digest-max-age-days", type=int, default=DEFAULT_DIGEST_MAX_AGE_DAYS)
-    parser.add_argument("--check-smtp-login", action="store_true", help="Attempt SMTP STARTTLS login without sending email")
+    # Deprecated no-op: SMTP moved to the fleet notification worker (DEVOPS-243).
+    parser.add_argument("--check-smtp-login", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--check-kafka", action="store_true", help="Check Kafka broker TCP connectivity")
     parser.add_argument("--notify", action="store_true", help="Notify on health-state changes")
     parser.add_argument("--force-notify", action="store_true", help="Notify even if the health-state signature is unchanged")

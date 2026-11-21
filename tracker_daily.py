@@ -12,7 +12,7 @@ Steps:
   3. Save tracker.json and optionally rsync it (+ profile.json) to backup storage
   4. Compile a digest (active applications by stage, overdue follow-ups,
      follow-ups due in the next 7 days)
-  5. Email the digest via fleet-notify shared SMTP library
+  5. Email the digest via fleet_sdk.notify (fleet notification worker)
   6. Log the run to tracker_daily.log
 """
 
@@ -37,11 +37,9 @@ TRACKER_PATH = Path(os.environ.get("JOB_APP_TRACKER_PATH", str(BASE_DIR / "track
 PROFILE_PATH = Path(os.environ.get("JOB_APP_PROFILE_PATH", str(BASE_DIR / "profile.json")))
 NAS_SYNC_PATH = os.environ.get("NAS_SYNC_PATH", "")
 
-# SMTP config via fleet-notify — auto-loaded from SMTP_* env vars.
-from fleet_notify import send_email
-from fleet_notify.config import load_smtp_config
+# Email goes through fleet_sdk.notify; this app holds no SMTP credentials.
+from notify_email import send_email
 
-_SMTP_CONFIG = load_smtp_config()
 LOG_PATH = Path(os.environ.get("JOB_APP_TRACKER_LOG_PATH", str(_SRC_DIR / "tracker_daily.log")))
 
 TERMINAL_STAGES = {"accepted", "rejected", "withdrawn"}
@@ -148,9 +146,9 @@ def _format_digest_email(digest: dict, today: str) -> tuple[str, str]:
 
 
 def _send_digest_email(subject: str, body: str) -> bool:
-    """Send the digest via SMTP (fleet-notify). Returns True on
-    success, False if not configured or delivery failed."""
-    return send_email(subject, body, config=_SMTP_CONFIG)
+    """Publish the digest email to the fleet notification service.
+    True once published or spooled; False if the publish failed."""
+    return send_email(subject, body, service="tracker_daily")
 
 
 def _sync_to_nas() -> bool:

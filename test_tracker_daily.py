@@ -111,44 +111,19 @@ class TestFormatDigestEmail:
 
 
 class TestSendDigestEmail:
-    def test_returns_false_when_not_configured(self, monkeypatch):
-        # Empty SmtpConfig → is_configured is False → send_email returns False
-        from fleet_notify.config import SmtpConfig
-        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig())
-        assert td._send_digest_email("subject", "body") is False
-
-    def test_sends_via_smtp_when_configured(self, monkeypatch):
-        from fleet_notify.config import SmtpConfig
-        # Mock fleet_notify.send_email to verify _send_digest_email delegates correctly
+    def test_delegates_to_fleet_notify_adapter(self, monkeypatch):
         calls = []
-        def fake_send_email(subject, body, config=None, *, to=None, from_=None, html=None):
-            calls.append((subject, body, config))
+
+        def fake_send_email(subject, body, **kw):
+            calls.append((subject, body, kw))
             return True
 
         monkeypatch.setattr(td, "send_email", fake_send_email)
-        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig(
-            host="smtp.gmail.com", port=587,
-            user="user@gmail.com", password="app-password",
-            to="user@gmail.com", from_="user@gmail.com",
-        ))
-        result = td._send_digest_email("subject", "body")
-        assert result is True
-        assert len(calls) == 1
-        assert calls[0][0] == "subject"
-        assert calls[0][2] is td._SMTP_CONFIG
+        assert td._send_digest_email("subject", "body") is True
+        assert calls == [("subject", "body", {"service": "tracker_daily"})]
 
-    def test_returns_false_on_smtp_exception(self, monkeypatch):
-        from fleet_notify.config import SmtpConfig
-        # Mock fleet_notify.send_email to simulate failure
-        def failing_send_email(subject, body, config=None, *, to=None, from_=None, html=None):
-            return False
-
-        monkeypatch.setattr(td, "send_email", failing_send_email)
-        monkeypatch.setattr(td, "_SMTP_CONFIG", SmtpConfig(
-            host="smtp.gmail.com", port=587,
-            user="user@gmail.com", password="app-password",
-            to="user@gmail.com", from_="user@gmail.com",
-        ))
+    def test_returns_false_when_publish_fails(self, monkeypatch):
+        monkeypatch.setattr(td, "send_email", lambda subject, body, **kw: False)
         assert td._send_digest_email("subject", "body") is False
 
 

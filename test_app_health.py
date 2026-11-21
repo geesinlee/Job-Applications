@@ -53,7 +53,7 @@ def test_gmail_oauth_reports_failed_account(monkeypatch):
 def test_notify_suppresses_unchanged_signature(tmp_path, monkeypatch):
     alert_state = tmp_path / ".health_alert_state.json"
     monkeypatch.setattr(app_health, "HEALTH_ALERT_STATE_PATH", alert_state)
-    monkeypatch.setattr(app_health, "notify_smtp", lambda report: True)
+    monkeypatch.setattr(app_health, "notify_email", lambda report: True)
     monkeypatch.setattr(app_health, "notify_webhook", lambda report: False)
     monkeypatch.setattr(app_health, "notify_kafka", lambda report: False)
 
@@ -65,7 +65,7 @@ def test_notify_suppresses_unchanged_signature(tmp_path, monkeypatch):
     first = app_health.notify(report)
     second = app_health.notify(report)
 
-    assert first["smtp"] is True
+    assert first["email"] is True
     assert second["suppressed_unchanged"] is True
 
 

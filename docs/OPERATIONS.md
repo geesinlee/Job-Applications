@@ -8,8 +8,10 @@ The current Pi deployment loads the job digest environment from:
 /home/gs/Projects/Job-Applications/.env
 ```
 
-Update the Gmail SMTP app password by changing `SMTP_PASS` in that file. Keep
-`SMTP_USER`, `SMTP_FROM`, and `SMTP_TO` aligned with the intended mailbox.
+This app holds no SMTP credentials (DEVOPS-243). Digests and alerts are
+published through `fleet_sdk.notify` (Kafka `fleet.notifications.v1`, email
+channel, local spool fallback). The fleet notification worker on pi-4 (owned by
+`fleet-rationalization`) holds the SMTP settings and sends the mail.
 
 The generic systemd unit examples use:
 
@@ -28,7 +30,7 @@ the effective service with `systemctl --user cat <unit>` before editing secrets.
 - artefact volume existence and writability
 - Postgres TCP reachability when `JOB_APP_STORAGE_BACKEND=postgres`
 - MCP HTTP `tools/list`
-- SMTP configuration, with optional STARTTLS login
+- Notification publish path (Kafka security config for `fleet_sdk.notify`)
 - Gmail OAuth refresh for configured accounts
 - LLM triage configuration when `JOB_DIGEST_TRIAGE_MODE=llm`
 - job digest failure state and last-success freshness
@@ -60,17 +62,18 @@ Local or production smoke check:
 Production-style scheduled check:
 
 ```bash
-.venv/bin/python app_health.py --notify --check-smtp-login --check-kafka
+.venv/bin/python app_health.py --notify --check-kafka
 ```
 
-`--check-smtp-login` logs into SMTP without sending an email. This catches
-revoked or replaced Gmail app passwords. `--check-kafka` checks the configured
-Kafka broker socket.
+`notify_config` checks that the Kafka security config for the notification
+publish path loads. `--check-kafka` checks the configured Kafka broker socket.
+`--check-smtp-login` is accepted but ignored (SMTP moved to the worker).
 
 ## Alert Channels
 
-SMTP alerts use the same `SMTP_*` variables as the daily digest. Because SMTP
-can itself be the failed dependency, configure at least one independent channel:
+Email alerts go through the same notification path as the daily digest. Because
+that path can itself be the failed dependency, configure at least one
+independent channel:
 
 - `JOB_APP_HEALTH_WEBHOOK_URL` for an external HTTP alert target
 - `JOB_APP_HEALTH_KAFKA_ENABLED=true` and `JOB_APP_HEALTH_KAFKA_TOPIC` for Kafka
@@ -85,12 +88,13 @@ discovery catch-up.
 
    ```bash
    cd ~/Projects/Job-Applications
-   venv/bin/python app_health.py --json --check-smtp-login --check-kafka
+   venv/bin/python app_health.py --json --check-kafka
    ```
 
 2. Reauthorize Gmail OAuth if `gmail_oauth` is failing.
 
-3. Replace `SMTP_PASS` if `smtp_login` is failing.
+3. If mail stops while `notify_config` is OK, check the worker:
+   `journalctl --user -u fleet-notification-worker` on pi-4 (DLQ / SMTP errors).
 
 4. Run a dry digest check:
 
@@ -98,7 +102,7 @@ discovery catch-up.
    venv/bin/python job_digest.py --dry-run
    ```
 
-5. Run the digest once manually after both Gmail OAuth and SMTP are healthy:
+5. Run the digest once manually after Gmail OAuth and `notify_config` are healthy:
 
    ```bash
    venv/bin/python job_digest.py

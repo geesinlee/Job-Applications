@@ -24,6 +24,10 @@ def pytest_configure(config):
         "JOB_APP_PROFILE_PATH": str(base_dir / "profile.json"),
         "JOB_APP_CV_RECORDS_PATH": str(base_dir / "cv_records.json"),
         "LLM_PROVIDER": "mock",
+        # fleet_sdk reads host Kafka SASL defaults from ~/.fleet/kafka-client.env and
+        # spools notifications to ~/.fleet/spool; keep tests off both (DEVOPS-243).
+        "FLEET_KAFKA_ENV_FILE": str(base_dir / "no-kafka-client.env"),
+        "NOTIFY_SPOOL_PATH": str(base_dir / "notify-spool.db"),
     }
     for name, value in test_environment.items():
         _ORIGINAL_JOB_APP_ENV[name] = os.environ.get(name)
