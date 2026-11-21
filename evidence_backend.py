@@ -115,7 +115,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
         """Initialize Postgres backend.
 
         Args:
-            database_url: PostgreSQL connection string (e.g., postgresql://user:pass@host/db).
+            database_url: PostgreSQL connection string (e.g., postgresql://user:password@host/db).
 
         Raises:
             ImportError: If psycopg2 is not installed.
