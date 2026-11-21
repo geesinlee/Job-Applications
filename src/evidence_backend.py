@@ -214,7 +214,7 @@ class PostgresEvidenceBackend(EvidenceBackend):
         Initialize Postgres backend.
 
         Args:
-            db_url: Postgres connection string (e.g., postgresql://user:pass@host/db)
+            db_url: Postgres connection string (e.g., postgresql://user:password@host/db)
         """
         self.db_url = db_url
         self._client = None
